@@ -19,29 +19,37 @@ include_directories(
 )
 
 # ── Sysroot ───────────────────────────────────────────────────────────────────
-set(ALERTGATEWAY_SYSROOT "/home/rambos/sysroot" CACHE PATH
-    "Board sysroot containing FFmpeg-rockchip headers and arm64 libraries")
-set(SYSROOT ${ALERTGATEWAY_SYSROOT})
+# ── Sysroot ──────────────────────────────────────────────────
+set(ALERTGATEWAY_SYSROOT "${CMAKE_SYSROOT}" CACHE PATH
+    "Target board sysroot")
 
-# FFmpeg rockchip 6.1 headers must come BEFORE system FFmpeg 4.4.2 headers
-# to match the ABI of /opt/ffmpeg-rockchip/lib/*.so on the board.
-include_directories(${SYSROOT}/opt/ffmpeg-rockchip/include)
-include_directories(${SYSROOT}/usr/include/aarch64-linux-gnu)
+if(NOT ALERTGATEWAY_SYSROOT)
+    message(FATAL_ERROR "Please configure with an ARM64 toolchain file")
+endif()
 
-# ── Libraries (direct absolute paths) ────────────────────────────────────────
-set(FFMPEG_LIB   ${SYSROOT}/opt/ffmpeg-rockchip/lib)
-set(MPP_LIB      ${SYSROOT}/usr/lib/aarch64-linux-gnu/librockchip_mpp.so)
-# Use the board's actual .so files as link stubs (version 1.3.9 C, 1.2.0 C++).
-# Headers in third_party/paho/include are from paho-mqtt-cpp v1.2.0 to match the ABI.
-set(PAHO_C_LIB   ${CMAKE_SOURCE_DIR}/third_party/paho/libpaho-mqtt3as.so.1)
-set(PAHO_CPP_LIB ${CMAKE_SOURCE_DIR}/third_party/paho/libpaho-mqttpp3.so.1)
+set(SYSROOT "${ALERTGATEWAY_SYSROOT}")
 
-# RKNN runtime lives on the board; this is only the cross-link stub.
-set(RKNN_LIB_PATH "${CMAKE_SOURCE_DIR}/third_party/rknn/librknnrt.so" CACHE PATH
-    "Path to librknnrt.so, or directory containing librknnrt.so")
+# 优先使用 SDK 中与其动态库配套的 Rockchip 头文件
+include_directories(BEFORE
+    ${SYSROOT}/usr/include/rknn
+    ${SYSROOT}/usr/include/rockchip
+    ${SYSROOT}/usr/include/rga
+)
 
-# RGA: use the board's actual .so as link target (2.2.0-1, matches board exactly).
-set(RGA_LIB ${CMAKE_SOURCE_DIR}/third_party/rga/lib/librga.so.2.1.0)
+# ── Libraries ────────────────────────────────────────────────
+set(FFMPEG_LIB "${SYSROOT}/usr/lib")
+
+set(MPP_LIB "${SYSROOT}/usr/lib/librockchip_mpp.so")
+set(RGA_LIB "${SYSROOT}/usr/lib/librga.so")
+
+set(RKNN_LIB_PATH "${SYSROOT}/usr/lib/librknnrt.so"
+    CACHE FILEPATH "RKNN runtime library")
+
+# Paho 需要另外准备 ARM64 版本
+set(PAHO_C_LIB
+    "${CMAKE_SOURCE_DIR}/third_party/paho/libpaho-mqtt3as.so.1")
+set(PAHO_CPP_LIB
+    "${CMAKE_SOURCE_DIR}/third_party/paho/libpaho-mqttpp3.so.1")
 
 # ── Sources ───────────────────────────────────────────────────────────────────
 set(SOURCES
