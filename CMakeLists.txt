@@ -15,7 +15,7 @@ include_directories(
     ${TP}/mpp/include
     ${TP}/rga/include
     ${TP}            # nlohmann/json.hpp lives at third_party/nlohmann/json.hpp
-    ${TP}/paho/include
+    ${TP}/paho/install-arm64/include
 )
 
 # ── Sysroot ───────────────────────────────────────────────────────────────────
@@ -47,9 +47,10 @@ set(RKNN_LIB_PATH "${SYSROOT}/usr/lib/librknnrt.so"
 
 # Paho 需要另外准备 ARM64 版本
 set(PAHO_C_LIB
-    "${CMAKE_SOURCE_DIR}/third_party/paho/libpaho-mqtt3as.so.1")
+    "${TP}/paho/install-arm64/lib/libpaho-mqtt3a.so")
+
 set(PAHO_CPP_LIB
-    "${CMAKE_SOURCE_DIR}/third_party/paho/libpaho-mqttpp3.so.1")
+    "${TP}/paho/install-arm64/lib/libpaho-mqttpp3.so")
 
 # ── Sources ───────────────────────────────────────────────────────────────────
 set(SOURCES

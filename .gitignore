@@ -1,6 +1,7 @@
 # build artifacts
 build/
 build-*/
+third_party
 
 # local Claude Code settings (machine-specific permissions, paths)
 .claude/settings.local.json
