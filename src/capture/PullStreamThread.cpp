@@ -221,7 +221,12 @@ void PullStreamThread::stop() {
 void PullStreamThread::run() {
     uint64_t next_frame_id = 0;
     AVCodecContext* codec_ctx = nullptr;
-    const AVCodec* codec = nullptr;
+    // 兼容不同版本的 FFmpeg 解码器指针类型
+    #if LIBAVFORMAT_VERSION_MAJOR < 59
+        AVCodec* codec = nullptr;
+    #else
+        const AVCodec* codec = nullptr;
+    #endif
     int video_stream_idx = -1;
     AVPacket* packet = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
