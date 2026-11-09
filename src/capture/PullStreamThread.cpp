@@ -188,7 +188,7 @@ PullStreamThread::PullStreamThread(const PullStreamConfig& cfg,
                                  BlockingQueue<Frame>& infer_queue,
                                  std::shared_ptr<FrameBufferPool> frame_pool)
     : cfg_(cfg), enc_queue_(enc_queue), infer_queue_(infer_queue),
-      frame_pool_(std::move(frame_pool)) {}
+      frame_pool_(std::move(frame_pool)) {}//这里的目的是将形参中shared_ptr的所有权给到frame_pool_，这样缓冲区的引用计数就不会在函数结束时减少，从而避免缓冲区被提前释放。
 
 PullStreamThread::~PullStreamThread() {
     stop();
@@ -267,7 +267,7 @@ void PullStreamThread::run() {
             std::cerr << log_tag() << "[PullStream] avformat_alloc_context failed\n";
             break;
         }
-        format_ctx->interrupt_callback.callback = interrupt_callback;
+        format_ctx->interrupt_callback.callback = interrupt_callback; //用于在阻塞的网络 I/O 操作中检查线程是否应该停止。FFmpeg 在执行网络操作时会调用这个回调函数，如果返回非零值，FFmpeg 会中断当前操作。
         format_ctx->interrupt_callback.opaque = this;
         AVDictionary* options = nullptr;
         // 强制 TCP 传输，防止 RTSP 丢包花屏
@@ -305,7 +305,7 @@ void PullStreamThread::run() {
         }
 
         // 3. 寻找最佳视频流
-        video_stream_idx = av_find_best_stream(format_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+        video_stream_idx = av_find_best_stream(format_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);//选择一条最佳的AVMEDIA_TYPE_VIDEO流
         if (video_stream_idx < 0 || !codec) {
             std::cerr << "[PullStream] No suitable video stream found\n" << std::flush;
             avformat_close_input(&format_ctx);
@@ -318,8 +318,8 @@ void PullStreamThread::run() {
         // 4. 配置解码器上下文。板端 Rockchip FFmpeg 的 rkmpp decoder 优先输出
         // CPU 可读的 NV12；4K->1080 在本线程直接抽样，避免四路并发导入 DMA-BUF
         // 触发板端 RGA 的 swiotlb 映射耗尽。旧版本若没有 NV12，仍保留 DRM_PRIME 兼容分支。
-        const AVCodec* selected_codec = codec;
-        if (cfg_.hardware_decode) {
+        const AVCodec* selected_codec = codec; 
+        if (cfg_.hardware_decode) {  //如果使用硬解码，则尝试选择 Rockchip 硬件解码器
             const char* decoder_name = nullptr;
             if (format_ctx->streams[video_stream_idx]->codecpar->codec_id == AV_CODEC_ID_H264) {
                 decoder_name = "h264_rkmpp";
@@ -337,14 +337,14 @@ void PullStreamThread::run() {
                 }
             }
         }
-        codec_ctx = avcodec_alloc_context3(selected_codec);
+        codec_ctx = avcodec_alloc_context3(selected_codec);//这里只是在初始化并创建特定的解码器上下文
         if (!codec_ctx) {
             std::cerr << "[PullStream] avcodec_alloc_context3 failed\n" << std::flush;
             avformat_close_input(&format_ctx);
             continue;
         }
 
-        ret = avcodec_parameters_to_context(codec_ctx, format_ctx->streams[video_stream_idx]->codecpar);
+        ret = avcodec_parameters_to_context(codec_ctx, format_ctx->streams[video_stream_idx]->codecpar);//这里是复制视频流汇总对应编码器上下文的具体参数
         if (ret < 0) {
             std::cerr << "[PullStream] avcodec_parameters_to_context failed\n" << std::flush;
             avcodec_free_context(&codec_ctx);
@@ -353,17 +353,18 @@ void PullStreamThread::run() {
         }
 
         // 启用多线程解码提高 4K 效率
-        codec_ctx->thread_count = cfg_.hardware_decode ? 1 : 4;
-        codec_ctx->thread_type = cfg_.hardware_decode ? 0 : FF_THREAD_FRAME;
+        codec_ctx->thread_count = cfg_.hardware_decode ? 1 : 4; //软解码的话启动多线程
+        codec_ctx->thread_type = cfg_.hardware_decode ? 0 : FF_THREAD_FRAME;//软解码的话启用帧级多线程，也就是每个线程解码一帧，不设置这个的话，
+                                                                            //会编程切片级多线程，多个线程处理同一帧中可并行的部分
         if (cfg_.hardware_decode) {
-            codec_ctx->get_format = choose_nv12;
+            codec_ctx->get_format = choose_nv12; //硬解码的话选择 NV12 格式
         }
 
         if (cfg_.hardware_decode) {
             av_opt_set(codec_ctx->priv_data, "afbc", "off", 0);
             av_opt_set(codec_ctx->priv_data, "buf_mode", "half", 0);
         }
-        ret = avcodec_open2(codec_ctx, selected_codec, nullptr);
+        ret = avcodec_open2(codec_ctx, selected_codec, nullptr);  //ff_ret = avcodec_open2(pCodecCtx, pCodec, nullptr); 打开并初始化ffmpeg解码器
         if (ret < 0) {
             std::cerr << "[PullStream] avcodec_open2 failed\n" << std::flush;
             avcodec_free_context(&codec_ctx);
@@ -420,7 +421,7 @@ void PullStreamThread::run() {
         int64_t last_media_pts_ms = AV_NOPTS_VALUE;
         while (running_) {
             const auto read_started = std::chrono::steady_clock::now();
-            ret = av_read_frame(format_ctx, packet);
+            ret = av_read_frame(format_ctx, packet);  //从解开的封装里读取packet，解封装的过程是将封装格式（如MP4、MKV、RTSP等）中的数据解析出来，得到原始的音视频数据包。这个函数会阻塞直到读取到一个完整的packet或者发生错误。
             read_us += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - read_started).count());
             ++read_calls;
@@ -434,7 +435,7 @@ void PullStreamThread::run() {
 
             if (packet->stream_index == video_stream_idx) {
                 const auto decode_send_started = std::chrono::steady_clock::now();
-                ret = avcodec_send_packet(codec_ctx, packet);
+                ret = avcodec_send_packet(codec_ctx, packet); //把packet送入解码器，解码器会将其放入内部队列中等待解码
                 decode_send_us += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now() - decode_send_started).count());
                 ++decode_send_packets;
@@ -446,10 +447,10 @@ void PullStreamThread::run() {
 
                 for (;;) {
                     const auto decode_receive_started = std::chrono::steady_clock::now();
-                    const int receive_ret = avcodec_receive_frame(codec_ctx, frame);
+                    const int receive_ret = avcodec_receive_frame(codec_ctx, frame); //  取出解码图像
                     decode_receive_us += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - decode_receive_started).count());
-                    if (receive_ret != 0) break;
+                    if (receive_ret != 0) break; // AVERROR(EAGAIN) 或 AVERROR_EOF，表示没有更多帧可接收，打断循环
                     ++decode_frames;
                     int w = frame->width;
                     int h = frame->height;
@@ -643,7 +644,7 @@ void PullStreamThread::run() {
                     }
                 }
             }
-            av_packet_unref(packet);
+            av_packet_unref(packet);//释放packet的内存，避免内存泄漏
         }
 
         // 6. 连接断开清理，准备下一轮重连
