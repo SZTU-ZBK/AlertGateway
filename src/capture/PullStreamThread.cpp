@@ -474,7 +474,7 @@ void PullStreamThread::run() {
 
                     const size_t frame_size = static_cast<size_t>(output_width) * output_height * 3 / 2;
 
-                    Frame frame_obj;
+                    Frame frame_obj;     //自定义的frame结构体，后面我自己改一下，它需要包含一个对DMA缓冲池的引用计数。
                     frame_obj.width = output_width;
                     frame_obj.height = output_height;
                     frame_obj.frame_id = ++next_frame_id;
