@@ -166,7 +166,7 @@ static void resize_nv12_nearest(const uint8_t* src, int src_stride,
 
 static bool rga_resize_fd(int src_fd, int src_stride, int dst_fd, int dst_stride,
                           int sw, int sh, int dw, int dh) {
-    rga_buffer_t src_buf = wrapbuffer_fd(src_fd, sw, sh, RK_FORMAT_YCbCr_420_SP,
+    rga_buffer_t src_buf = wrapbuffer_fd(src_fd, sw, sh, RK_FORMAT_YCbCr_420_SP,//NV12半平面布局
                                          src_stride, sh);
     rga_buffer_t dst_buf = wrapbuffer_fd(dst_fd, dw, dh, RK_FORMAT_YCbCr_420_SP,
                                          dst_stride, dh);
@@ -503,34 +503,34 @@ void PullStreamThread::run() {
                         std::chrono::steady_clock::now().time_since_epoch()).count();
 
                     const bool drm_frame = cfg_.hardware_decode && frame->format == AV_PIX_FMT_DRM_PRIME;
-                    if (drm_frame) {
+                    if (drm_frame) {//判断是不是硬解码的帧，硬解码帧放的是文件描述符，而不是像软解码帧那样放的是数据指针
                         const auto* descriptor = reinterpret_cast<const RkMppDrmFrameDescriptor*>(frame->data[0]);
-                        if (!descriptor || descriptor->drm_desc.nb_objects <= 0 ||
-                            descriptor->drm_desc.nb_layers <= 0 ||
-                            descriptor->drm_desc.layers[0].nb_planes <= 0) {
-                            std::cerr << log_tag() << "[PullStream] invalid DRM_PRIME frame descriptor\n";
-                            av_frame_unref(frame);
-                            continue;
-                        }
-                        const auto& plane = descriptor->drm_desc.layers[0].planes[0];
-                        const int object_index = plane.object_index;
-                        if (object_index < 0 || object_index >= descriptor->drm_desc.nb_objects) {
-                            std::cerr << log_tag() << "[PullStream] invalid DRM plane object index\n";
-                            av_frame_unref(frame);
-                            continue;
-                        }
-                        const int src_fd = descriptor->drm_desc.objects[object_index].fd;
-                        const int src_stride = static_cast<int>(plane.pitch);
-                        MppBuffer src_buffer = descriptor->buffers[object_index];
-                        if (src_fd < 0 || src_stride < w || !src_buffer) {
-                            std::cerr << log_tag() << "[PullStream] incomplete DRM_PRIME NV12 descriptor fd="
-                                      << src_fd << " stride=" << src_stride << "\n";
-                            av_frame_unref(frame);
-                            continue;
-                        }
+                        // if (!descriptor || descriptor->drm_desc.nb_objects <= 0 ||
+                        //     descriptor->drm_desc.nb_layers <= 0 ||
+                        //     descriptor->drm_desc.layers[0].nb_planes <= 0) {
+                        //     std::cerr << log_tag() << "[PullStream] invalid DRM_PRIME frame descriptor\n";
+                        //     av_frame_unref(frame);
+                        //     continue;
+                        // }
+                        const auto& plane = descriptor->drm_desc.layers[0].planes[0];//描述图像平面如何存放，一会需要给RGA用来做缩放
+                        const int object_index = plane.object_index;                 //这个缓冲区的 DMA-BUF fd所在的索引
+                        // if (object_index < 0 || object_index >= descriptor->drm_desc.nb_objects) {
+                        //     std::cerr << log_tag() << "[PullStream] invalid DRM plane object index\n";
+                        //     av_frame_unref(frame);
+                        //     continue;
+                        // }
+                        const int src_fd = descriptor->drm_desc.objects[object_index].fd; //获取 DMA-BUF fd
+                        const int src_stride = static_cast<int>(plane.pitch); //告诉 RGA 图像每行如何排列
+                        MppBuffer src_buffer = descriptor->buffers[object_index]; //缓冲区句柄
+                        // if (src_fd < 0 || src_stride < w || !src_buffer) {
+                        //     std::cerr << log_tag() << "[PullStream] incomplete DRM_PRIME NV12 descriptor fd="
+                        //               << src_fd << " stride=" << src_stride << "\n";
+                        //     av_frame_unref(frame);
+                        //     continue;
+                        // }
 
                         if (resize_after_decode) {
-                            MppBuffer output_buffer = nullptr;
+                            MppBuffer output_buffer = nullptr; //输出的buffer句柄由MPP创建
                             if (mpp_buffer_get(output_buffer_group_, &output_buffer, frame_size) != MPP_OK ||
                                 !output_buffer) {
                                 std::cerr << log_tag() << "[PullStream] DRM output buffer allocation failed\n";
@@ -541,39 +541,39 @@ void PullStreamThread::run() {
                             const int dst_stride = output_width;
                             bool rga_ok = rga_resize_fd(src_fd, src_stride, dst_fd, dst_stride,
                                                         w, h, output_width, output_height);
-                            if (!rga_ok) {
-                                void* src_ptr = mpp_buffer_get_ptr(src_buffer);
-                                void* dst_ptr = mpp_buffer_get_ptr(output_buffer);
-                                if (src_ptr && dst_ptr) {
-                                    mpp_buffer_sync_ro_begin(src_buffer);
-                                    resize_nv12_nearest(static_cast<const uint8_t*>(src_ptr), src_stride,
-                                                        static_cast<uint8_t*>(dst_ptr), dst_stride,
-                                                        w, h, output_width, output_height);
-                                    mpp_buffer_sync_ro_end(src_buffer);
-                                } else {
-                                    mpp_buffer_put(output_buffer);
-                                    av_frame_unref(frame);
-                                    continue;
-                                }
-                            }
+                            // if (!rga_ok) {
+                            //     void* src_ptr = mpp_buffer_get_ptr(src_buffer);
+                            //     void* dst_ptr = mpp_buffer_get_ptr(output_buffer);
+                            //     if (src_ptr && dst_ptr) {
+                            //         mpp_buffer_sync_ro_begin(src_buffer);
+                            //         resize_nv12_nearest(static_cast<const uint8_t*>(src_ptr), src_stride,
+                            //                             static_cast<uint8_t*>(dst_ptr), dst_stride,
+                            //                             w, h, output_width, output_height);
+                            //         mpp_buffer_sync_ro_end(src_buffer);
+                            //     } else {
+                            //         mpp_buffer_put(output_buffer);
+                            //         av_frame_unref(frame);
+                            //         continue;
+                            //     }
+                            // }
                             frame_obj.dma_buffer = std::make_shared<MppBufferHolder>(output_buffer);
                             frame_obj.dma_stride = dst_stride;
                         } else {
-                            mpp_buffer_inc_ref(src_buffer);
-                            frame_obj.dma_buffer = std::make_shared<MppBufferHolder>(src_buffer);
+                            mpp_buffer_inc_ref(src_buffer);//要对原始的 DMA-BUF 句柄增加引用计数，避免在 frame_obj 使用完毕前被释放
+                            frame_obj.dma_buffer = std::make_shared<MppBufferHolder>(src_buffer);//不需要resize的话，直接把原来的SRC_BUFFER的句柄传给frame_obj，后续使用完毕后会自动释放
                             frame_obj.dma_stride = src_stride;
                         }
                     } else if (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P ||
-                               frame->format == AV_PIX_FMT_NV12) {
+                               frame->format == AV_PIX_FMT_NV12) { //软解码的帧
                         const auto resize_started = std::chrono::steady_clock::now();
-                        frame_obj.raw_data = frame_pool_->acquire(frame_size);
+                        frame_obj.raw_data = frame_pool_->acquire(frame_size); //从缓冲池中获取一块内存来存放解码后的数据，避免频繁的内存分配和释放，提高性能
                         uint8_t* decoded_target = resize_after_decode
                             ? decoded_nv12.data() : frame_obj.raw_data.data();
                         if (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) {
                             yuv420p_to_nv12(frame, decoded_target, w, h);
                             if (resize_after_decode) {
                                 resize_nv12_nearest(decoded_target, w, frame_obj.raw_data.data(), output_width,
-                                                    w, h, output_width, output_height);
+                                                    w, h, output_width, output_height);  //软件缩放，先把解码后的YUV420P转换成NV12，然后再缩放到目标大小
                             }
                         } else if (resize_after_decode) {
                             // Hardware rkmpp normally exposes NV12 planes directly. Scale from
@@ -603,7 +603,7 @@ void PullStreamThread::run() {
                     // 有界等待仍可在编码真正卡住时避免无限阻塞。
                     if (running_) {
                         const auto enqueue_started = std::chrono::steady_clock::now();
-                        if (enc_queue_.push(frame_obj, 100)) ++enc_pushed;
+                        if (enc_queue_.push(frame_obj, 100)) ++enc_pushed; //队列内自带锁，满了最多等待100ms
                         else ++enc_dropped;
                         size_t replaced = 0;
                         if (infer_queue_.push_latest(std::move(frame_obj), &replaced)) {

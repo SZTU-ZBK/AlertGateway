@@ -232,7 +232,7 @@ bool InferThread::load_model() {
 
     // ── Zero-copy 输入设置 ──────────────────────────────────────────────
     uint32_t inp_size = input_attr.size_with_stride > 0 ? input_attr.size_with_stride : input_attr.size;
-    input_mem_ = rknn_create_mem(ctx_, inp_size);
+    input_mem_ = rknn_create_mem(ctx_, inp_size);  // 预分配 NPU DMA 内存，后续 RGA/CPU 预处理结果直接写入这块内存，避免再从临时 input_buf memcpy 一次。
     if (!input_mem_) { std::cerr << "rknn_create_mem(input) failed\n"; return false; }
 
     // pass_through=0 → 交给SDK内部做格式/类型转换；我们这边送的是 UINT8 NHWC 格式
@@ -575,9 +575,10 @@ void InferThread::run() {
                 // YUYV/NV12 → RGB888 + 缩放，直接写入 RKNN 输入 DMA 内存。
                 // RGA 硬件优先，失败时回退到 CPU 路径。
                 bool use_letterbox = cfg_.output_layout == "rockchip_dfl";
-                bool rga_ok = use_letterbox
-                    ? rga_yuv_to_rgb_letterbox(frame.raw_data.data(), frame.width, frame.height, frame.pixel_format,
-                                                nullptr, input_buf, model_width_, model_height_)
+                //这里传入的frame.raw_data.data()是一个虚拟地址，RGA 既支持通过 DMA-BUF fd 访问图像，也支持通过虚拟地址访问图像。
+                bool rga_ok = use_letterbox  //letterbox：保持宽高比，缩放到目标画布中的一个矩形区域。
+                    ? rga_yuv_to_rgb_letterbox(frame.raw_data.data(), frame.width, frame.height, frame.pixel_format, 
+                                                nullptr, input_buf, model_width_, model_height_) //将RGA的输出直接写入RKNN的输入DMA内存
                     : rga_yuv_to_rgb_resize(frame.raw_data.data(), frame.width, frame.height, frame.pixel_format,
                                              nullptr, input_buf, model_width_, model_height_);
                 if (!rga_ok) {
