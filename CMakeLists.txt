@@ -102,6 +102,19 @@ target_link_libraries(AlertGateway PRIVATE
 # are present on the board but not in the cross-compile sysroot.
 target_link_options(AlertGateway PRIVATE -Wl,--allow-shlib-undefined)
 
+# Collect the application and locally built Paho runtime libraries for upload.
+# Rockchip/FFmpeg libraries are supplied by the matching board image.
+add_custom_command(TARGET AlertGateway POST_BUILD #关联到目标文件，编译后执行
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/deploy/lib" #创建文件夹
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different             # 将build文件夹里的编译结果复制到文件夹
+        "$<TARGET_FILE:AlertGateway>" "${CMAKE_BINARY_DIR}/deploy/AlertGateway"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different             #把两个动态链接库也复制过去    
+        "${PAHO_C_LIB}" "${CMAKE_BINARY_DIR}/deploy/lib/libpaho-mqtt3a.so.1"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different 
+        "${PAHO_CPP_LIB}" "${CMAKE_BINARY_DIR}/deploy/lib/libpaho-mqttpp3.so.1"
+    VERBATIM
+)
+
 # Standalone RKNN microbenchmark used for controlled model comparisons.
 # Disabled by default so the production build remains unchanged.
 option(BUILD_RKNN_BENCHMARK "Build the standalone RKNN benchmark" OFF)
