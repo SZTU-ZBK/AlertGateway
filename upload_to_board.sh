@@ -4,8 +4,14 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/build-atk-arm64}"
+CONFIG_DIR="$PROJECT_DIR/config"
 BOARD_USER="${BOARD_USER:-root}"
 REMOTE_DIR="/root/AlertGateway-test"
+
+if [[ ! -d "$CONFIG_DIR" || ! -f "$CONFIG_DIR/config.json" ]]; then
+    echo "错误：缺少配置目录或入口配置 $CONFIG_DIR/config.json" >&2
+    exit 1
+fi
 
 read -r -p '开发板 IPv4 地址: ' BOARD_IP
 if [[ ! "$BOARD_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
@@ -43,6 +49,7 @@ mkdir -p "$STAGE_DIR/lib"
 cp -L -- "$APP" "$STAGE_DIR/AlertGateway"
 cp -L -- "$PAHO_DIR/libpaho-mqtt3a.so.1" "$STAGE_DIR/lib/"
 cp -L -- "$PAHO_DIR/libpaho-mqttpp3.so.1" "$STAGE_DIR/lib/"
+cp -R -- "$CONFIG_DIR" "$STAGE_DIR/config"
 
 cat > "$STAGE_DIR/run.sh" <<'RUN'
 #!/bin/sh
@@ -53,9 +60,9 @@ exec ./AlertGateway "${1:-config/config.json}"
 RUN
 chmod +x "$STAGE_DIR/AlertGateway" "$STAGE_DIR/run.sh"
 
-echo "上传至 $BOARD_USER@$BOARD_IP:$REMOTE_DIR（保留板端已有配置和模型）"
+echo "上传至 $BOARD_USER@$BOARD_IP:$REMOTE_DIR（覆盖同名配置文件，保留模型）"
 tar -C "$STAGE_DIR" -cf - . | ssh "$BOARD_USER@$BOARD_IP" \
     "mkdir -p '$REMOTE_DIR' && tar -xf - -C '$REMOTE_DIR'"
 
-echo '上传完成。配置和模型需单独准备；未启动程序。'
+echo '上传完成，config 已上传并覆盖同名文件。模型需单独准备；未启动程序。'
 echo "板端运行：cd $REMOTE_DIR && ./run.sh"
