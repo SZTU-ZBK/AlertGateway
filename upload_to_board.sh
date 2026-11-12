@@ -6,6 +6,8 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/build-atk-arm64}"
 CONFIG_DIR="$PROJECT_DIR/config"
 BOARD_USER="${BOARD_USER:-root}"
+BOARD_IP="${BOARD_IP:-10.34.39.99}"
+BOARD_PASSWORD="${BOARD_PASSWORD:-root}"
 REMOTE_DIR="/root/AlertGateway-test"
 
 if [[ ! -d "$CONFIG_DIR" || ! -f "$CONFIG_DIR/config.json" ]]; then
@@ -13,7 +15,10 @@ if [[ ! -d "$CONFIG_DIR" || ! -f "$CONFIG_DIR/config.json" ]]; then
     exit 1
 fi
 
-read -r -p '开发板 IPv4 地址: ' BOARD_IP
+if [[ -t 0 ]]; then
+    read -r -p "开发板 IPv4 地址 [$BOARD_IP]: " INPUT_BOARD_IP
+    BOARD_IP="${INPUT_BOARD_IP:-$BOARD_IP}"
+fi
 if [[ ! "$BOARD_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     echo '错误：请输入 IPv4 地址。' >&2
     exit 1
@@ -60,8 +65,23 @@ exec ./AlertGateway "${1:-config/config.json}"
 RUN
 chmod +x "$STAGE_DIR/AlertGateway" "$STAGE_DIR/run.sh"
 
+# Keep the password out of command-line arguments and the uploaded archive.
+ASKPASS_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$STAGE_DIR" "$ASKPASS_DIR"' EXIT
+cat > "$ASKPASS_DIR/askpass" <<'ASKPASS'
+#!/bin/sh
+case "$1" in
+    *[Pp]assword*) printf '%s\n' "$BOARD_PASSWORD" ;;
+    *) exit 1 ;;
+esac
+ASKPASS
+chmod 700 "$ASKPASS_DIR/askpass"
+
 echo "上传至 $BOARD_USER@$BOARD_IP:$REMOTE_DIR（覆盖同名配置文件，保留模型）"
-tar -C "$STAGE_DIR" -cf - . | ssh "$BOARD_USER@$BOARD_IP" \
+tar -C "$STAGE_DIR" -cf - . | \
+    BOARD_PASSWORD="$BOARD_PASSWORD" SSH_ASKPASS="$ASKPASS_DIR/askpass" \
+    SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-:0}" \
+    ssh -o NumberOfPasswordPrompts=1 "$BOARD_USER@$BOARD_IP" \
     "mkdir -p '$REMOTE_DIR' && tar -xf - -C '$REMOTE_DIR'"
 
 echo '上传完成，config 已上传并覆盖同名文件。模型需单独准备；未启动程序。'
