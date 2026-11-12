@@ -1,0 +1,65 @@
+// 单路 1080p 推拉流配置学习版，仅供阅读。
+// JSONC 支持注释，但当前程序使用标准 JSON 解析，不能直接加载此文件。
+// 使用时需删除注释，保存为 JSON，再通过入口配置的 active_config 引用。
+// 此配置片段需要继承 config/config.json 中的 model、detection、mqtt 等字段。
+// active_config 的相对路径以入口配置所在目录为基准。
+// 加载逻辑：src/main.cpp 中的 load_entry_config()、merge_json()。
+// 同名对象递归合并，其他同名字段由 active_config 选中的配置覆盖。
+{
+  // 输入：发布端 → 流媒体服务器 → 板子拉流。
+  "source": {
+    // pull_stream：网络拉流；v4l2：本地摄像头采集（需要不同参数）。
+    "type": "pull_stream",
+
+    // PC 或摄像头需提前向此地址发布视频，服务器也需提前运行。
+    "url": "rtmp://192.168.0.168/live/testsrc2",
+
+    // 必须与输入视频实际分辨率一致，否则程序会丢弃解码帧。
+    // 这两个字段不是缩放目标；另有 output_width/output_height 用于输出尺寸。
+    // 参考：src/capture/PullStreamThread.cpp。
+    "width": 1920,
+    "height": 1080,
+
+    // 目标处理帧率，也用于编码和推流参数；建议初次验证与输入帧率一致。
+    // 此参数不保证实际处理性能一定达到 30 fps。
+    "fps": 30,
+
+    // 拉流失败后等待多少秒再重连。
+    "reconnect_sec": 5
+  },
+
+  // 输出：解码画面 → 检测与编码 → 板子推流 → 流媒体服务器 → 播放器。
+  "stream": {
+    // RTMP 输出模式，目前源码会校验固定输出地址。
+    "sink": "fixed_rtmp",
+
+    // 无 channels 数组的单路配置，目前必须使用下列地址。
+    // 只改这里的 IP 会校验失败，需要同步调整源码中的地址限制。
+    // 参考：src/main.cpp 的 validate_output_topology()，
+    // 以及 src/app/ChannelPipeline.cpp 的 ChannelPipeline::build()。
+    // 输入与输出使用不同流名，避免形成回路。
+    "rtmp_url": "rtmp://192.168.0.168/live/alertgateway",
+
+    // 编码目标码率，单位 kbps；4000 kbps = 4 Mbps。
+    // 这是用于初次验证的示例值，需按画质、网络和板端性能调整。
+    "bitrate_kbps": 4000
+  },
+
+  // 先关闭附加图像处理功能，便于理解基本链路。
+  // 关闭这些功能不会关闭主流程中的 RKNN 推理。
+  // 模型路径等参数仍由入口配置提供，模型需在板端存在。
+  "image_processing": {
+    "thumbnail": {
+      // 关闭缩略图功能。
+      "enabled": false
+    },
+    "roi": {
+      // 关闭 ROI（Region of Interest，感兴趣区域）功能。
+      "enabled": false
+    },
+    "tiling": {
+      // 关闭切片推理功能。
+      "enabled": false
+    }
+  }
+}
