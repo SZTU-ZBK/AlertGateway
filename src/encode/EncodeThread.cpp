@@ -101,7 +101,7 @@ bool EncodeThread::init_mpp() {
         return set_ret == MPP_OK;
     };
 
-    bool cfg_ok = true;
+    bool cfg_ok = true;//设置编码参数，
     cfg_ok = set_s32("prep:width",        cfg_.width) && cfg_ok;
     cfg_ok = set_s32("prep:height",       cfg_.height) && cfg_ok;
     cfg_ok = set_s32("prep:hor_stride",   cfg_.width) && cfg_ok;
@@ -613,7 +613,7 @@ void EncodeThread::run() {
         // resize falls below the configured FPS, the output timeline must
         // reflect the real frame spacing instead of pretending every frame
         // arrived at a fixed 30 FPS cadence.
-        mpp_frame_set_pts(mpp_frame,        frame.pts_ms);
+        mpp_frame_set_pts(mpp_frame,        frame.pts_ms); //展示时间
         mpp_frame_set_buffer(mpp_frame,     frame_buf);
         mpp_frame_set_eos(mpp_frame,        0);
 

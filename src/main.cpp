@@ -125,7 +125,7 @@ void validate_output_topology(const std::vector<NormalizedChannel>& channels, bo
             const std::string target = stream.value("rtmp_url", std::string{});
             const std::string expected = multi_channel_mode
                 ? std::string(kResultRtmpPrefix) + channel.id
-                : "rtmp://192.168.0.168/live/alertgateway";
+                : "rtmp://10.34.12.169:1935/live/alertgateway";
             if (target != expected) {
                 throw std::runtime_error(
                     "Config error: channel " + channel.id +

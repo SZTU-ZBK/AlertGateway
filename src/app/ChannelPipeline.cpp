@@ -11,7 +11,7 @@ using json = nlohmann::json;
 
 namespace {
 
-constexpr const char* kSingleResultRtmp = "rtmp://192.168.0.168/live/alertgateway";
+constexpr const char* kSingleResultRtmp = "rtmp://10.34.12.169:1935/live/alertgateway";
 constexpr const char* kMultiResultRtmpPrefix = "rtmp://192.168.0.168/live/alertgateway_channel_";
 
 StreamSinkType parse_sink(const json& stream) {
