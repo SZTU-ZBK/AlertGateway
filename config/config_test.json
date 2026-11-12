@@ -1,0 +1,20 @@
+{
+  "source": {
+    "type": "pull_stream",
+    "url": "rtmp://10.34.12.169:1935/live/testsrc2",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "reconnect_sec": 5
+  },
+  "stream": {
+    "sink": "fixed_rtmp",
+    "rtmp_url": "rtmp://10.34.12.169:1935/live/alertgateway",
+    "bitrate_kbps": 4000
+  },
+  "image_processing": {
+    "thumbnail": { "enabled": false },
+    "roi": { "enabled": false },
+    "tiling": { "enabled": false }
+  }
+}
