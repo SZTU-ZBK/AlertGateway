@@ -8,31 +8,15 @@
 #include <ctime>
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
-static std::string encode_base64(const std::vector<uint8_t>& bytes) {
-    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    for (size_t i=0; i<bytes.size(); i+=3) {
-        uint32_t v=bytes[i]<<16;
-        if(i+1<bytes.size()) v|=bytes[i+1]<<8;
-        if(i+2<bytes.size()) v|=bytes[i+2];
-        out += table[(v>>18)&63]; out += table[(v>>12)&63];
-        out += i+1<bytes.size()?table[(v>>6)&63]:'=';
-        out += i+2<bytes.size()?table[v&63]:'=';
-    }
-    return out;
-}
-
 // 只保存引用/配置，不做任何 RKNN 或线程相关的初始化——真正的初始化都推迟到 start()，
 // 这样构造对象本身不会失败，失败（模型加载不了等）统一在 start() 里抛异常处理。
 InferThread::InferThread(const ModelConfig& model_cfg,
                          const DetectionConfig& det_cfg,
-                         const ImageProcessingConfig& image_cfg,
                          BlockingQueue<Frame>& in_queue,
                          BlockingQueue<std::string>& mqtt_queue,
                          SharedDetections& shared_dets,
                          NpuInferenceSchedulerPtr npu_scheduler)
     : cfg_(model_cfg), det_cfg_(det_cfg),
-      image_cfg_(image_cfg),
       in_queue_(in_queue), mqtt_queue_(mqtt_queue), shared_dets_(shared_dets),
       npu_scheduler_(std::move(npu_scheduler)) {}
 
@@ -131,7 +115,7 @@ void InferThread::on_scheduled_result(const NpuInferenceResult& result) {
     const std::string key = summary_key(result.detections);
     if (key != last_summary_key_) {
         last_summary_key_ = key;
-        mqtt_queue_.push(summarize(result.detections, nullptr), 100);
+        mqtt_queue_.push(summarize(result.detections), 100);
     }
 }
 
@@ -423,15 +407,11 @@ static json summarize_objects(const std::vector<Detection>& dets) {
 // 该类里的最高置信度，输出形如 {"timestamp":..,"objects":[{"label","count","score"},...]}
 // 的 JSON 字符串。这里只做聚合不做节流/去重，节流（report_interval_sec）和
 // 去重（跟 summary_key() 比较）是 run() 调用它之后才做的事。
-std::string InferThread::summarize(const std::vector<Detection>& dets, const Thumbnail* thumbnail) {
+std::string InferThread::summarize(const std::vector<Detection>& dets) {
     json msg;
     msg["channel_id"] = cfg_.channel_id;
     msg["timestamp"] = static_cast<int64_t>(std::time(nullptr));
     msg["objects"]   = summarize_objects(dets);
-    if (thumbnail && !thumbnail->data.empty()) {
-        msg["thumbnail"] = {{"width", thumbnail->width}, {"height", thumbnail->height},
-                             {"format", thumbnail->format}, {"data", encode_base64(thumbnail->data)}};
-    }
     return msg.dump();
 }
 
@@ -460,9 +440,6 @@ void InferThread::run() {
     std::vector<Detection> last_detections;
     int frame_idx = 0;
     int rga_fail_count = 0;
-    ThumbnailTask thumbnail_task(image_cfg_.thumbnail);
-    Thumbnail pending_thumbnail;
-    bool has_thumbnail = false;
 
 
     while (running_) {
@@ -476,7 +453,6 @@ void InferThread::run() {
         }
 
         if (frame_idx % step == 0) {
-            has_thumbnail = false;
             using clk = std::chrono::steady_clock;
             auto t0 = clk::now();
 
@@ -563,12 +539,6 @@ void InferThread::run() {
                       << " npu:" << ms(t2,t3) << " cnv:" << ms(t3,t4)
                       << " total:" << ms(t0,t4) << " ms objs:" << last_detections.size() << "\n" << std::flush;
 
-            has_thumbnail = false;
-            if (image_cfg_.thumbnail.enabled &&
-                (!image_cfg_.thumbnail.on_detection_only || !last_detections.empty())) {
-                pending_thumbnail = thumbnail_task.create(frame);
-                has_thumbnail = true;
-            }
             shared_dets_.update(last_detections, frame.frame_id, frame.pts_ms,
                                 frame.width, frame.height);
             if (cfg_.track_debug_logging && frame_idx % 30 == 0) {
@@ -595,7 +565,7 @@ void InferThread::run() {
             std::string key = summary_key(last_detections);
             if (key != last_summary_key_) {
                 last_summary_key_ = key;
-                mqtt_queue_.push(summarize(last_detections, has_thumbnail ? &pending_thumbnail : nullptr), 100);
+                mqtt_queue_.push(summarize(last_detections), 100);
             }
         }
     }

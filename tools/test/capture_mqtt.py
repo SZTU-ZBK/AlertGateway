@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import sys
 import json
-import base64
 import time
 from paho.mqtt import client as mqtt_client
 
@@ -31,17 +30,6 @@ def subscribe(client: mqtt_client.Client):
         try:
             payload = json.loads(payload_str)
             messages.append(payload)
-            # Validate thumbnail if present
-            if "thumbnail" in payload:
-                thumb = payload["thumbnail"]
-                width = thumb.get("width")
-                height = thumb.get("height")
-                fmt = thumb.get("format")
-                data_b64 = thumb.get("data")
-                if data_b64:
-                    raw_data = base64.b64decode(data_b64)
-                    expected_len = int(width * height * 1.5)
-                    print(f"[Validation] Thumbnail: {width}x{height} {fmt}. Base64 data length: {len(data_b64)}, Decoded binary length: {len(raw_data)}, Expected: {expected_len}. Match: {len(raw_data) == expected_len}")
         except Exception as e:
             print(f"Error parsing message: {e}")
 

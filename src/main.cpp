@@ -163,11 +163,6 @@ NpuSchedulerConfig parse_npu_scheduler_config(const json& root_config) {
     return config;
 }
 
-bool thumbnail_enabled(const json& channel_config) {
-    const json image = channel_config.value("image_processing", json::object());
-    return image.value("thumbnail", json::object()).value("enabled", false);
-}
-
 void validate_npu_scheduler_config(const NpuSchedulerConfig& scheduler,
                                    const std::vector<NormalizedChannel>& channels) {
     if (!scheduler.enabled) return;
@@ -201,11 +196,6 @@ void validate_npu_scheduler_config(const NpuSchedulerConfig& scheduler,
             throw std::runtime_error(
                 "Config error: channel " + channel.id +
                 " requires model.path, target_infer_fps > 0 and npu_weight >= 1 when scheduler is enabled");
-        }
-        if (thumbnail_enabled(channel.config)) {
-            throw std::runtime_error(
-                "Config error: channel " + channel.id +
-                " must disable thumbnail for the first scheduler implementation");
         }
         if (model_path.empty()) {
             model_path = path;

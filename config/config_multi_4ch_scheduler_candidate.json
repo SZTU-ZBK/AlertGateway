@@ -53,9 +53,6 @@
     "broker": "192.168.0.168",
     "port": 1883
   },
-  "image_processing": {
-    "thumbnail": {"enabled": false, "width": 320, "height": 180, "on_detection_only": true}
-  },
   "channels": [
     {"id": "1", "source": {"type": "pull_stream", "url": "rtmp://192.168.0.168/live/dual_a", "width": 1920, "height": 1080, "fps": 30, "reconnect_sec": 5}, "stream": {"sink": "fixed_rtmp", "rtmp_url": "rtmp://192.168.0.168/live/alertgateway_channel_1"}, "mqtt": {"topic": "desk/four/a", "client_id": "AlertGateway-four-a"}},
     {"id": "2", "source": {"type": "pull_stream", "url": "rtmp://192.168.0.168/live/dual_b", "width": 1920, "height": 1080, "fps": 30, "reconnect_sec": 5}, "stream": {"sink": "fixed_rtmp", "rtmp_url": "rtmp://192.168.0.168/live/alertgateway_channel_2"}, "mqtt": {"topic": "desk/four/b", "client_id": "AlertGateway-four-b"}},

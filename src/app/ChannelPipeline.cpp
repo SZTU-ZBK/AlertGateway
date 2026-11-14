@@ -213,15 +213,6 @@ void ChannelPipeline::build() {
     DetectionConfig detection_cfg{};
     detection_cfg.report_interval_sec = detection.at("report_interval_sec").get<int>();
 
-    ImageProcessingConfig image_cfg{};
-    const json image_processing = config_.value("image_processing", json::object());
-    if (image_processing.contains("thumbnail")) {
-        const auto& thumbnail = image_processing.at("thumbnail");
-        image_cfg.thumbnail.enabled = thumbnail.value("enabled", false);
-        image_cfg.thumbnail.width = thumbnail.value("width", 320);
-        image_cfg.thumbnail.height = thumbnail.value("height", 180);
-        image_cfg.thumbnail.on_detection_only = thumbnail.value("on_detection_only", true);
-    }
     const json stream = config_.value("stream", json::object());
     const StreamSinkType sink = parse_sink(stream);
     std::string output_target;
@@ -278,7 +269,7 @@ void ChannelPipeline::build() {
     } else {
         video_source_ = std::make_unique<CaptureThread>(camera_cfg, *enc_queue_, *infer_queue_, frame_pool_);
     }
-    infer_ = std::make_unique<InferThread>(model_cfg, detection_cfg, image_cfg,
+    infer_ = std::make_unique<InferThread>(model_cfg, detection_cfg,
                                            *infer_queue_, *mqtt_queue_, *shared_dets_,
                                            npu_scheduler_);
     encoder_ = std::make_unique<EncodeThread>(encode_cfg, *enc_queue_, *stream_queue_, *shared_dets_);

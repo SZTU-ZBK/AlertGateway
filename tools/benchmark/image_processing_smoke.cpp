@@ -1,9 +1,7 @@
 #include <cassert>
 #include <iostream>
-#include "infer/ThumbnailTask.hpp"
 #include "common/SharedDetections.hpp"
 int main() {
-    Frame f; f.width=8; f.height=4; f.pixel_format=PixelFormat::NV12; f.raw_data.resize(8*4*3/2,128);
     // 同类别包含框在跨帧尺寸变化时必须复用同一条轨迹，不能在 display_hold
     // 期间让旧大框和新小框同时出现在发布快照中。
     TrackerConfig tracker_cfg;
@@ -38,7 +36,5 @@ int main() {
     duplicate_classes.update({keyboard, laptop}, 1, 2500, 3840, 2160);
     assert(duplicate_classes.get_for_pts(2500).detections.size() == 1);
 
-    ThumbnailConfig hc; hc.enabled=true; hc.width=4; hc.height=2;
-    auto thumb=ThumbnailTask(hc).create(f); assert(thumb.data.size()==12);
     std::cout << "image_processing_smoke: OK\n";
 }

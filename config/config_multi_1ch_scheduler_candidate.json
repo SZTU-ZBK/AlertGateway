@@ -32,9 +32,6 @@
     "topic": "desk/scheduler/one",
     "client_id": "AlertGateway-scheduler-one"
   },
-  "image_processing": {
-    "thumbnail": {"enabled": false}
-  },
   "channels": [
     {
       "id": "1",

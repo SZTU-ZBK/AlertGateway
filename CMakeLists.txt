@@ -50,7 +50,6 @@ set(SOURCES
     src/app/ChannelPipeline.cpp
     src/capture/CaptureThread.cpp
     src/capture/PullStreamThread.cpp
-    src/infer/ThumbnailTask.cpp
     src/infer/NpuInferenceScheduler.cpp
     src/infer/RknnNpuExecutor.cpp
     src/infer/InferThread.cpp
@@ -122,7 +121,6 @@ if(BUILD_INFER_CAMERA_SMOKE)
     add_executable(infer_camera_smoke
         tools/benchmark/infer_camera_smoke.cpp
         src/capture/CaptureThread.cpp
-        src/infer/ThumbnailTask.cpp
         src/infer/NpuInferenceScheduler.cpp
         src/infer/InferThread.cpp
         src/infer/RockchipYoloPostprocess.cpp
@@ -144,8 +142,7 @@ endif()
 option(BUILD_IMAGE_PROCESSING_SMOKE "Build image processing smoke test" OFF)
 if(BUILD_IMAGE_PROCESSING_SMOKE)
     add_executable(image_processing_smoke
-        tools/benchmark/image_processing_smoke.cpp
-        src/infer/ThumbnailTask.cpp)
+        tools/benchmark/image_processing_smoke.cpp)
     target_include_directories(image_processing_smoke PRIVATE ${CMAKE_SOURCE_DIR}/src)
 endif()
 

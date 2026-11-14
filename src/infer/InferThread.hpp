@@ -13,8 +13,6 @@
 #include "common/SharedDetections.hpp"
 #include "infer/RockchipYoloPostprocess.hpp"
 #include "infer/YoloPostprocess.hpp"
-#include "infer/ImageProcessing.hpp"
-#include "infer/ThumbnailTask.hpp"
 #include "infer/NpuInferenceScheduler.hpp"
 
 struct ModelConfig {
@@ -64,7 +62,6 @@ struct DetectionConfig {
 class InferThread {
 public:
     InferThread(const ModelConfig& model_cfg, const DetectionConfig& det_cfg,
-                const ImageProcessingConfig& image_cfg,
                 BlockingQueue<Frame>& in_queue,
                 BlockingQueue<std::string>& mqtt_queue,
                 SharedDetections& shared_dets,
@@ -77,13 +74,11 @@ private:
     void run_scheduled();
     void on_scheduled_result(const NpuInferenceResult& result);
     bool load_model();
-    std::string summarize(const std::vector<Detection>& dets,
-                          const Thumbnail* thumbnail);
+    std::string summarize(const std::vector<Detection>& dets);
     std::string summary_key(const std::vector<Detection>& dets);
 
     ModelConfig cfg_;
     DetectionConfig det_cfg_;
-    ImageProcessingConfig image_cfg_;
     BlockingQueue<Frame>& in_queue_;
     BlockingQueue<std::string>& mqtt_queue_;
     SharedDetections& shared_dets_;

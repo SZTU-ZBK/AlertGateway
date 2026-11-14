@@ -65,10 +65,5 @@
     "width": 640,
     "height": 480,
     "fps": 30
-  },
-  "image_processing": {
-    "thumbnail": {
-      "enabled": false
-    }
   }
 }
