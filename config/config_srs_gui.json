@@ -69,12 +69,6 @@
   "image_processing": {
     "thumbnail": {
       "enabled": false
-    },
-    "roi": {
-      "enabled": false
-    },
-    "tiling": {
-      "enabled": false
     }
   }
 }

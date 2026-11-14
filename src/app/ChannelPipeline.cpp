@@ -222,28 +222,6 @@ void ChannelPipeline::build() {
         image_cfg.thumbnail.height = thumbnail.value("height", 180);
         image_cfg.thumbnail.on_detection_only = thumbnail.value("on_detection_only", true);
     }
-    if (image_processing.contains("roi")) {
-        const auto& roi = image_processing.at("roi");
-        image_cfg.roi.enabled = roi.value("enabled", false);
-        image_cfg.roi.filter_outside = roi.value("filter_outside", true);
-        image_cfg.roi.track_dwell_sec = roi.value("track_dwell_sec", 0.0f);
-        for (const auto& item : roi.value("regions", json::array())) {
-            image_cfg.roi.regions.push_back({
-                item.value("id", std::string("roi-") + std::to_string(image_cfg.roi.regions.size())),
-                item.value("x", 0.0f), item.value("y", 0.0f),
-                item.value("w", 1.0f), item.value("h", 1.0f),
-            });
-        }
-    }
-    if (image_processing.contains("tiling")) {
-        const auto& tiling = image_processing.at("tiling");
-        image_cfg.tiling.enabled = tiling.value("enabled", false);
-        image_cfg.tiling.grid_cols = tiling.value("grid_cols", 2);
-        image_cfg.tiling.grid_rows = tiling.value("grid_rows", 1);
-        image_cfg.tiling.overlap_ratio = tiling.value("overlap_ratio", 0.10f);
-        image_cfg.tiling.merge_iou_threshold = tiling.value("merge_iou_threshold", 0.45f);
-    }
-
     const json stream = config_.value("stream", json::object());
     const StreamSinkType sink = parse_sink(stream);
     std::string output_target;

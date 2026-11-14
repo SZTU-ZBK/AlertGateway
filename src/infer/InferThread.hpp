@@ -14,8 +14,6 @@
 #include "infer/RockchipYoloPostprocess.hpp"
 #include "infer/YoloPostprocess.hpp"
 #include "infer/ImageProcessing.hpp"
-#include "infer/RoiFilter.hpp"
-#include "infer/TilingTask.hpp"
 #include "infer/ThumbnailTask.hpp"
 #include "infer/NpuInferenceScheduler.hpp"
 
@@ -79,10 +77,8 @@ private:
     void run_scheduled();
     void on_scheduled_result(const NpuInferenceResult& result);
     bool load_model();
-    std::vector<Detection> infer_once(const Frame& frame, const TileRect* region = nullptr);
     std::string summarize(const std::vector<Detection>& dets,
-                          const Thumbnail* thumbnail,
-                          const std::vector<RoiEvent>* events);
+                          const Thumbnail* thumbnail);
     std::string summary_key(const std::vector<Detection>& dets);
 
     ModelConfig cfg_;

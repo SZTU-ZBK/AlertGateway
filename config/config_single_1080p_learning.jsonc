@@ -52,14 +52,6 @@
     "thumbnail": {
       // 关闭缩略图功能。
       "enabled": false
-    },
-    "roi": {
-      // 关闭 ROI（Region of Interest，感兴趣区域）功能。
-      "enabled": false
-    },
-    "tiling": {
-      // 关闭切片推理功能。
-      "enabled": false
     }
   }
 }

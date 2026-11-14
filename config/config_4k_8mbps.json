@@ -17,19 +17,6 @@
       "width": 320,
       "height": 180,
       "on_detection_only": true
-    },
-    "roi": {
-      "enabled": false,
-      "regions": [],
-      "filter_outside": true,
-      "track_dwell_sec": 0
-    },
-    "tiling": {
-      "enabled": false,
-      "grid_cols": 2,
-      "grid_rows": 1,
-      "overlap_ratio": 0.1,
-      "merge_iou_threshold": 0.45
     }
   }
 }

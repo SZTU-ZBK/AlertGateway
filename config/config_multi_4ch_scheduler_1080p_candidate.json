@@ -29,9 +29,7 @@
     "port": 1883
   },
   "image_processing": {
-    "thumbnail": {"enabled": false, "width": 320, "height": 180, "on_detection_only": true},
-    "roi": {"enabled": false, "regions": [], "filter_outside": true, "track_dwell_sec": 0},
-    "tiling": {"enabled": false, "grid_cols": 2, "grid_rows": 1, "overlap_ratio": 0.1, "merge_iou_threshold": 0.45}
+    "thumbnail": {"enabled": false, "width": 320, "height": 180, "on_detection_only": true}
   },
   "channels": [
     {"id": "1", "source": {"type": "pull_stream", "url": "rtmp://192.168.0.168/live/alertgateway_1080p_source_a", "width": 1920, "height": 1080, "output_width": 1920, "output_height": 1080, "fps": 30, "reconnect_sec": 5, "hardware_decode": true}, "stream": {"sink": "fixed_rtmp", "rtmp_url": "rtmp://192.168.0.168/live/alertgateway_channel_1"}, "mqtt": {"topic": "desk/four4k1080/a", "client_id": "AlertGateway-four4k1080-a"}},

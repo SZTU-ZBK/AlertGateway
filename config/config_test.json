@@ -13,8 +13,6 @@
     "bitrate_kbps": 4000
   },
   "image_processing": {
-    "thumbnail": { "enabled": false },
-    "roi": { "enabled": false },
-    "tiling": { "enabled": false }
+    "thumbnail": { "enabled": false }
   }
 }

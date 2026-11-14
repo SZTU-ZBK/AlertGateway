@@ -90,8 +90,8 @@ struct SharedDetections {
                     std::max(std::hypot(track_w, track_h), std::hypot(det_w, det_h)));
                 const bool distance_match = distance <= std::max(48.0f, local_distance) &&
                                             size_similarity >= 0.40f;
-                // 同类别检测在前级通常已经做过包含去重，但检测框会随帧抖动、
-                // ROI 复检切换而改变尺寸。若旧框与新框仍是高 IoS 的包含关系，
+                // 检测框会随帧抖动或检测结果变化而改变尺寸。
+                // 若旧框与新框仍是高 IoS 的包含关系，
                 // 不能因为 IoU/尺寸相似度偏低而另建一条轨迹，否则 display_hold
                 // 期间会把旧框和新框同时发布出来。
                 const float intersection = intersection_area(association_box, dets[di]);

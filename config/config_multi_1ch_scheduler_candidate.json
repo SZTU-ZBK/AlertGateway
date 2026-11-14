@@ -33,9 +33,7 @@
     "client_id": "AlertGateway-scheduler-one"
   },
   "image_processing": {
-    "thumbnail": {"enabled": false},
-    "roi": {"enabled": false, "regions": []},
-    "tiling": {"enabled": false}
+    "thumbnail": {"enabled": false}
   },
   "channels": [
     {

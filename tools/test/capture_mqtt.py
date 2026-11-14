@@ -42,9 +42,6 @@ def subscribe(client: mqtt_client.Client):
                     raw_data = base64.b64decode(data_b64)
                     expected_len = int(width * height * 1.5)
                     print(f"[Validation] Thumbnail: {width}x{height} {fmt}. Base64 data length: {len(data_b64)}, Decoded binary length: {len(raw_data)}, Expected: {expected_len}. Match: {len(raw_data) == expected_len}")
-            # Validate ROI events if present
-            if "roi_events" in payload:
-                print(f"[Validation] ROI Events: {payload['roi_events']}")
         except Exception as e:
             print(f"Error parsing message: {e}")
 

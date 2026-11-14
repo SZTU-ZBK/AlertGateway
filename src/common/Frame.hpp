@@ -19,7 +19,7 @@ struct MppBufferHolder {
 
 // 帧像素数据的共享容器。
 // Frame 会同时进入编码和推理队列，复制 Frame 时只增加引用计数，不复制整帧像素。
-// 生产者完成填充后，消费者只读该数据；需要独立可写缓冲区的 ROI Tiling 仍显式创建新对象。
+// 生产者完成填充后，消费者只读该数据。
 class SharedByteBuffer {
 public:
     SharedByteBuffer() = default;
@@ -97,7 +97,7 @@ struct Frame {
     int     height       = 0;
     uint64_t frame_id    = 0;           // 源帧单调序号，同一画面送入编码/推理队列时保持一致
     int64_t pts_ms       = 0;           // 源视频媒体时间戳（ms），用于框与视频对齐
-    int64_t timestamp_ms = 0;           // 采集墙上时钟时间戳（ms），用于 ROI/MQTT/事件
+    int64_t timestamp_ms = 0;           // 采集墙上时钟时间戳（ms），用于 MQTT/事件
     std::vector<Detection> detections;  // 本帧的推理结果，由 InferThread 写入
     PixelFormat pixel_format = PixelFormat::YUYV; // 像素格式，默认 YUYV
     int dma_stride = 0;                    // dma_buffer 的水平 stride；0 表示使用 width
