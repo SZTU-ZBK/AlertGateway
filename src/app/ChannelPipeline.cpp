@@ -11,7 +11,6 @@ using json = nlohmann::json;
 
 namespace {
 
-constexpr const char* kSingleResultRtmp = "rtmp://10.34.12.169:1935/live/alertgateway";
 constexpr const char* kMultiResultRtmpPrefix = "rtmp://192.168.0.168/live/alertgateway_channel_";
 
 StreamSinkType parse_sink(const json& stream) {
@@ -250,10 +249,8 @@ void ChannelPipeline::build() {
     std::string output_target;
     if (sink == StreamSinkType::FixedRtmp) {
         output_target = stream.value("rtmp_url", std::string{});
-        const std::string expected = channel_id_ == "single"
-            ? kSingleResultRtmp
-            : std::string(kMultiResultRtmpPrefix) + channel_id_;
-        if (output_target != expected) {
+        const std::string expected = std::string(kMultiResultRtmpPrefix) + channel_id_;
+        if (channel_id_ != "single" && output_target != expected) {
             throw std::runtime_error("Config error: fixed_rtmp must use " + expected);
         }
     } else if (sink == StreamSinkType::LocalFlv) {

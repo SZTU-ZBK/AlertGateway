@@ -234,7 +234,7 @@ AlertGateway/
 > 旧版 `camera` 节点继续支持，自动映射为 `source.type=v4l2`，向下兼容。
 
 配置增加 `channels` 数组时，程序会把顶层模型、检测、图像处理、码率和 MQTT 公共字段递归合并到每一路；
-没有 `channels` 的旧配置会自动归一化为单路 `single`，并保持结果地址 `rtmp://192.168.0.168/live/alertgateway`。只有 `channels[]` 多路配置的每个 `fixed_rtmp` 地址必须严格为 `rtmp://192.168.0.168/live/alertgateway_channel_{channel_id}`；`local_flv` 与 `metrics_only` 仍可用于离线或性能验证。
+没有 `channels` 的配置会自动归一化为单路 `single`，结果发布到 `stream.rtmp_url` 指定的 RTMP 地址。使用 `channels[]` 时，每个 `fixed_rtmp` 地址必须为 `rtmp://192.168.0.168/live/alertgateway_channel_{channel_id}`。`local_flv` 与 `metrics_only` 可用于离线或性能验证。
 
 视频源配置示例：
 
