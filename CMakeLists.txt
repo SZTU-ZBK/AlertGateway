@@ -18,32 +18,24 @@ include_directories(
     ${TP}/paho/install-arm64/include
 )
 
-# ── Sysroot ───────────────────────────────────────────────────────────────────
-# ── Sysroot ──────────────────────────────────────────────────
-set(ALERTGATEWAY_SYSROOT "${CMAKE_SYSROOT}" CACHE PATH
-    "Target board sysroot")
-
-if(NOT ALERTGATEWAY_SYSROOT)
-    message(FATAL_ERROR "Please configure with an ARM64 toolchain file")
+# Board-specific dependencies can come from a complete SDK sysroot or a local bundle.
+set(ALERTGATEWAY_BOARD_DEPS "${TP}/atk-arm64" CACHE PATH "ARM64 board headers and link libraries")
+if(ALERTGATEWAY_SYSROOT)
+    set(BOARD_DEPS "${ALERTGATEWAY_SYSROOT}/usr")
+else()
+    set(BOARD_DEPS "${ALERTGATEWAY_BOARD_DEPS}")
 endif()
-
-set(SYSROOT "${ALERTGATEWAY_SYSROOT}")
-
-# 优先使用 SDK 中与其动态库配套的 Rockchip 头文件
 include_directories(BEFORE
-    ${SYSROOT}/usr/include/rknn
-    ${SYSROOT}/usr/include/rockchip
-    ${SYSROOT}/usr/include/rga
+    ${BOARD_DEPS}/include/rknn
+    ${BOARD_DEPS}/include/rockchip
+    ${BOARD_DEPS}/include/rga
+    ${BOARD_DEPS}/include
 )
 
-# ── Libraries ────────────────────────────────────────────────
-set(FFMPEG_LIB "${SYSROOT}/usr/lib")
-
-set(MPP_LIB "${SYSROOT}/usr/lib/librockchip_mpp.so")
-set(RGA_LIB "${SYSROOT}/usr/lib/librga.so")
-
-set(RKNN_LIB_PATH "${SYSROOT}/usr/lib/librknnrt.so"
-    CACHE FILEPATH "RKNN runtime library")
+set(FFMPEG_LIB "${BOARD_DEPS}/lib")
+set(MPP_LIB "${BOARD_DEPS}/lib/librockchip_mpp.so")
+set(RGA_LIB "${BOARD_DEPS}/lib/librga.so")
+set(RKNN_LIB_PATH "${BOARD_DEPS}/lib/librknnrt.so" CACHE FILEPATH "RKNN runtime library")
 
 # Paho 需要另外准备 ARM64 版本
 set(PAHO_C_LIB
@@ -72,22 +64,16 @@ set(SOURCES
 )
 
 add_executable(AlertGateway ${SOURCES})
+set_target_properties(AlertGateway PROPERTIES SKIP_BUILD_RPATH TRUE)
 
 target_include_directories(AlertGateway PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
-# RKNN: use stub .so for cross-link; real librknnrt.so is deployed on the board.
-if(IS_DIRECTORY "${RKNN_LIB_PATH}")
-    set(RKNN_STUB "${RKNN_LIB_PATH}/librknnrt.so")
-else()
-    set(RKNN_STUB "${RKNN_LIB_PATH}")
-endif()
-
-if(NOT EXISTS "${RKNN_STUB}")
-    message(FATAL_ERROR "RKNN stub not found: ${RKNN_STUB}")
+if(NOT EXISTS "${RKNN_LIB_PATH}")
+    message(FATAL_ERROR "RKNN link library not found: ${RKNN_LIB_PATH}")
 endif()
 
 target_link_libraries(AlertGateway PRIVATE
-    ${RKNN_STUB}
+    ${RKNN_LIB_PATH}
     ${MPP_LIB}
     ${RGA_LIB}
     ${PAHO_C_LIB}
@@ -104,13 +90,13 @@ target_link_options(AlertGateway PRIVATE -Wl,--allow-shlib-undefined)
 
 # Collect the application and locally built Paho runtime libraries for upload.
 # Rockchip/FFmpeg libraries are supplied by the matching board image.
-add_custom_command(TARGET AlertGateway POST_BUILD #关联到目标文件，编译后执行
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/deploy/lib" #创建文件夹
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different             # 将build文件夹里的编译结果复制到文件夹
+add_custom_command(TARGET AlertGateway POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/deploy/lib"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:AlertGateway>" "${CMAKE_BINARY_DIR}/deploy/AlertGateway"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different             #把两个动态链接库也复制过去    
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${PAHO_C_LIB}" "${CMAKE_BINARY_DIR}/deploy/lib/libpaho-mqtt3a.so.1"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different 
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${PAHO_CPP_LIB}" "${CMAKE_BINARY_DIR}/deploy/lib/libpaho-mqttpp3.so.1"
     VERBATIM
 )
@@ -128,7 +114,7 @@ if(BUILD_RKNN_BENCHMARK)
         ${TP}/rknn/include
         ${CMAKE_SOURCE_DIR}/src
     )
-    target_link_libraries(rknn_benchmark PRIVATE ${RKNN_STUB} pthread)
+    target_link_libraries(rknn_benchmark PRIVATE ${RKNN_LIB_PATH} pthread)
     target_compile_options(rknn_benchmark PRIVATE -g -O2)
 endif()
 
@@ -153,7 +139,7 @@ if(BUILD_INFER_CAMERA_SMOKE)
         ${CMAKE_SOURCE_DIR}/src
     )
     target_link_libraries(infer_camera_smoke PRIVATE
-        ${RKNN_STUB}
+        ${RKNN_LIB_PATH}
         ${RGA_LIB}
         pthread
     )

@@ -327,44 +327,22 @@ bash start.sh stop
 
 ## 编译
 
-### 依赖
-
-板子上：
-- librknnrt.so（预装）
-- librockchip_mpp.so（预装）
-- librga.so（预装）
-- libpaho-mqtt3as.so / libpaho-mqttpp3.so
-
-WSL2 交叉编译工具链：
-- aarch64-linux-gnu-g++ 11.4.0
-- 板端 sysroot，默认路径为 `/home/rambos/sysroot`，需包含板端 FFmpeg-rockchip 6.1 头文件和 arm64 库
-
-交叉编译时链接用的 `.so`（`third_party/rknn/librknnrt.so`、`third_party/rga/lib/librga.so.2.1.0`、
-`third_party/paho/libpaho-mqtt3as.so.1`、`libpaho-mqttpp3.so.1`）属于板子厂商的预编译二进制，未随仓库提交（见 `.gitignore`）。
-首次 clone 后需要从板子上把对应版本的 `.so` 拷到 `third_party/` 同名路径下，并准备实际运行用的 `model/yolov8s_rockchip_dfl.rknn`，再执行编译和部署。
-
-### 编译命令
+当前 ATK-DLRK3588（Buildroot、FFmpeg 4.4.1）的本地交叉编译依赖在
+`third_party/atk-arm64`（GCC、FFmpeg 头文件和板端链接库）及
+`third_party/paho/install-arm64`（Paho 头文件和 ARM64 库）。
+这些文件由本机准备，`third_party` 不随 Git 分发。默认使用 SDK GCC 配套的 libc sysroot，
+配套板端链接库由 CMake 单独添加。
 
 ```bash
-# WSL2 上
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-toolchain.cmake
-cmake --build build -j$(nproc)
-
-# 传到 192.168.0.200 板
-scp build/AlertGateway firefly@192.168.0.200:~/AlertGateway/
-scp config/config.json config/config_4k_18mbps.json firefly@192.168.0.200:~/AlertGateway/config/
-```
-
-如果 sysroot 或 RKNN 链接 stub 不在默认路径，可显式传入：
-
-```bash
-cmake -B build \
+cmake -S . -B build-atk-arm64 \
   -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-toolchain.cmake \
-  -DALERTGATEWAY_SYSROOT=/path/to/sysroot \
-  -DRKNN_LIB_PATH=/path/to/librknnrt.so
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-atk-arm64 -j4
 ```
 
----
+构建产物和 Paho 运行库收集到 `build-atk-arm64/deploy`。需要部署时运行
+`./upload_to_board.sh`。若有与目标镜像配套的完整 sysroot，可在新构建目录配置时用
+`-DALERTGATEWAY_SYSROOT=/path/to/sysroot` 指定。切换工具链或镜像时使用新的构建目录。
 
 ## 运行
 
