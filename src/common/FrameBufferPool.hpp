@@ -44,5 +44,5 @@ private:
 
     size_t max_cached_;
     std::mutex mutex_;
-    std::vector<std::unique_ptr<std::vector<uint8_t>>> free_;
+    std::vector<std::unique_ptr<std::vector<uint8_t>>> free_; //空闲内存池
 };

@@ -65,7 +65,7 @@ public:
         if (timeout_ms < 0) {
             not_empty_.wait(lock, pred);
         } else {
-            if (!not_empty_.wait_for(lock, std::chrono::milliseconds(timeout_ms), pred))
+            if (!not_empty_.wait_for(lock, std::chrono::milliseconds(timeout_ms), pred))//等待200ms内被唤醒
                 return false;
         }
         if (queue_.empty()) return false;

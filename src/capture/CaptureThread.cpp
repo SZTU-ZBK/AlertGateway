@@ -66,7 +66,7 @@ void CaptureThread::run() {
         FD_SET(fd_, &fds);
         struct timeval tv{ .tv_sec = 2, .tv_usec = 0 };
 
-        //只检查 `fd_` 是否进入可读状态
+        //只检查 摄像头的`fd_` 是否进入可读状态
         int r = select(fd_ + 1, &fds, nullptr, nullptr, &tv);
         if (r == -1) { if (errno == EINTR) continue; break; }
         if (r == 0)  continue; // 超时，没有新帧
@@ -76,7 +76,7 @@ void CaptureThread::run() {
         memset(&buf, 0, sizeof(buf));
         buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
-        if (ioctl(fd_, VIDIOC_DQBUF, &buf) == -1) continue;
+        if (ioctl(fd_, VIDIOC_DQBUF, &buf) == -1) continue;//	Dequeue Buffer，将已完成的缓冲区出队
 
         Frame frame;
         frame.width  = cfg_.width;
@@ -102,7 +102,7 @@ void CaptureThread::run() {
         enc_queue_.push(std::move(frame), 100);
 
         // 将缓冲区归还内核，供下一帧采集使用
-        if (ioctl(fd_, VIDIOC_QBUF, &buf) == -1) break;
+        if (ioctl(fd_, VIDIOC_QBUF, &buf) == -1) break;//缓冲区归还内核
     }
 }
 
@@ -204,24 +204,25 @@ bool CaptureThread::init_buffers() {
     // 向内核申请 4 块采集缓冲区（mmap 模式）
     // 4块缓冲区形成环形队列：内核填充 → 应用取出处理 → 归还内核，减少帧丢失
     struct v4l2_requestbuffers req;
-    memset(&req, 0, sizeof(req));
+    memset(&req, 0, sizeof(req)); //memset() 将整个结构体清零
     req.count  = 4;
     req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     req.memory = V4L2_MEMORY_MMAP;
-    if (ioctl(fd_, VIDIOC_REQBUFS, &req) == -1) return false;
+    if (ioctl(fd_, VIDIOC_REQBUFS, &req) == -1) return false;  //通过设备文件描述符，向驱动发送特定命令，要求分配缓冲区
 
-    buffers_.resize(req.count);
+    buffers_.resize(req.count); //req.count是实际返回的大小，不一定等于4
     for (size_t i = 0; i < req.count; i++) {
-        // 查询每块缓冲区的物理偏移和大小
+        // 查询每块缓冲区的物理偏移和大小，用于后面mmap映射用的参数
         struct v4l2_buffer buf;
         memset(&buf, 0, sizeof(buf));
         buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index  = i;
-        if (ioctl(fd_, VIDIOC_QUERYBUF, &buf) == -1) return false;
+        if (ioctl(fd_, VIDIOC_QUERYBUF, &buf) == -1) return false;  
 
         // 将内核缓冲区映射到用户空间，后续直接读取无需系统调用拷贝
-        buffers_[i].length = buf.length;
+        //缓冲区的用户态地址 + 缓冲区容量
+        buffers_[i].length = buf.length;                       
         buffers_[i].start  = mmap(nullptr, buf.length,
                                    PROT_READ | PROT_WRITE, MAP_SHARED,
                                    fd_, buf.m.offset);
@@ -238,7 +239,7 @@ bool CaptureThread::start_stream() {
         buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index  = i;
-        if (ioctl(fd_, VIDIOC_QBUF, &buf) == -1) return false;
+        if (ioctl(fd_, VIDIOC_QBUF, &buf) == -1) return false;  //Queue Buffer，将缓冲区入队
     }
     // 启动采集流，之后内核开始持续往缓冲区填帧
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
