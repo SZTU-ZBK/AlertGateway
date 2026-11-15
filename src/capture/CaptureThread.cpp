@@ -1,7 +1,6 @@
 #include "capture/CaptureThread.hpp"
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
-#include <sys/mman.h>
 #include <sys/select.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -12,6 +11,8 @@
 #include <chrono>
 #include <iostream>
 #include <iomanip>
+#include "im2d.h"
+#include "rga.h"
 
 namespace {
 
@@ -40,12 +41,25 @@ CaptureThread::CaptureThread(const CameraConfig& cfg,
     : cfg_(cfg), enc_queue_(enc_queue), infer_queue_(infer_queue),
       frame_pool_(frame_pool ? std::move(frame_pool) : std::make_shared<FrameBufferPool>(4)) {}
 
-CaptureThread::~CaptureThread() { stop(); }
+CaptureThread::~CaptureThread() {
+    stop();
+    if (output_buffer_group_) mpp_buffer_group_put(output_buffer_group_);
+}
 
 void CaptureThread::start() {
-    if (!open_device())  throw std::runtime_error("CaptureThread: failed to open " + cfg_.device);
-    if (!init_buffers()) throw std::runtime_error("CaptureThread: failed to init V4L2 buffers");
-    if (!start_stream()) throw std::runtime_error("CaptureThread: failed to start V4L2 stream");
+    if (running_) return;
+    try {
+        if (!open_device()) throw std::runtime_error("CaptureThread: failed to open " + cfg_.device);
+        if (!output_buffer_group_ &&
+            mpp_buffer_group_get_internal(&output_buffer_group_, MPP_BUFFER_TYPE_DRM) != MPP_OK)
+            throw std::runtime_error("CaptureThread: failed to create MPP buffer group");
+        if (!init_buffers()) throw std::runtime_error("CaptureThread: DMA-BUF export failed");
+        if (!start_stream()) throw std::runtime_error("CaptureThread: failed to start V4L2 stream");
+    } catch (...) {
+        stop_stream();
+        close_device();
+        throw;
+    }
     running_ = true;
     thread_ = std::thread(&CaptureThread::run, this);
 }
@@ -86,24 +100,60 @@ void CaptureThread::run() {
             std::chrono::steady_clock::now().time_since_epoch()).count();
         frame.timestamp_ms = frame.pts_ms;
 
-        // 将 mmap 缓冲区数据拷贝到 Frame（YUYV422 格式，宽×高×2 字节）
-        // 拷贝后立即归还缓冲区（VIDIOC_QBUF），内核可继续复用此缓冲区采集下一帧
-        const auto* src = static_cast<const uint8_t*>(buffers_[buf.index].start);
-        frame.raw_data = frame_pool_->acquire(buf.bytesused);
-        frame.raw_data.assign(src, src + buf.bytesused);
+        auto output = convert_to_nv12(buf.index, buf.bytesused, buf.flags);
 
-        // 向 InferThread 投递帧副本，非阻塞（timeout=0）
-        // InferThread 忙时 push 返回 false，帧被丢弃，不影响采集节奏
+        // 无论转换成功与否，都归还本次采集槽位；队列等待不占用摄像头 buffer。
+        if (ioctl(fd_, VIDIOC_QBUF, &buf) == -1) {
+            std::cerr << "[Capture] VIDIOC_QBUF failed: " << strerror(errno) << "\n";
+            break;
+        }
+        if (!output) continue;
+        frame.pixel_format = PixelFormat::NV12;
+        frame.dma_buffer = std::move(output);
+        frame.dma_stride = cfg_.width;
         Frame infer_copy = frame;
         infer_queue_.push_latest(std::move(infer_copy));
-
-        // 向 EncodeThread 投递帧，阻塞等待至多 100ms
-        // enc_queue 容量=1，此处是唯一的背压点：编码跟不上时采集会短暂等待
         enc_queue_.push(std::move(frame), 100);
-
-        // 将缓冲区归还内核，供下一帧采集使用
-        if (ioctl(fd_, VIDIOC_QBUF, &buf) == -1) break;//缓冲区归还内核
     }
+}
+
+std::shared_ptr<MppBufferHolder> CaptureThread::convert_to_nv12(
+    uint32_t buffer_index, size_t bytes_used, uint32_t flags) {
+    const size_t source_bytes = static_cast<size_t>(cfg_.width) * cfg_.height * 2;
+    const size_t output_bytes = static_cast<size_t>(cfg_.width) * cfg_.height * 3 / 2;
+    if (buffer_index >= buffers_.size() || (flags & V4L2_BUF_FLAG_ERROR) ||
+        bytes_used < source_bytes || bytes_used > buffers_[buffer_index].length) {
+        std::cerr << "[Capture] invalid captured buffer: index=" << buffer_index
+                  << " bytesused=" << bytes_used << " flags=" << flags << "\n";
+        return nullptr;
+    }
+
+    // holder 管理本次取得的引用，任何失败返回都会自动归还 MPP buffer。
+    auto output = std::make_shared<MppBufferHolder>(nullptr);
+    if (mpp_buffer_get(output_buffer_group_, &output->buffer, output_bytes) != MPP_OK ||
+        !output->buffer) {
+        std::cerr << "[Capture] MPP output buffer allocation failed\n";
+        return nullptr;
+    }
+    const int dst_fd = mpp_buffer_get_fd(output->buffer);
+    if (dst_fd < 0) {
+        std::cerr << "[Capture] MPP output buffer has no DMA-BUF fd\n";
+        return nullptr;
+    }
+
+    auto src = wrapbuffer_fd(buffers_[buffer_index].dma_fd, cfg_.width, cfg_.height,
+                             RK_FORMAT_YUYV_422, cfg_.width, cfg_.height);
+    auto dst = wrapbuffer_fd(dst_fd, cfg_.width, cfg_.height,
+                             RK_FORMAT_YCbCr_420_SP, cfg_.width, cfg_.height);
+    // sync=1：同步转换完成后，调用者才可以 QBUF 归还源采集槽位。
+    const IM_STATUS result = imcvtcolor(src, dst, RK_FORMAT_YUYV_422,
+                                       RK_FORMAT_YCbCr_420_SP,
+                                       IM_COLOR_SPACE_DEFAULT, 1);
+    if (result != IM_STATUS_SUCCESS) {
+        std::cerr << "[Capture] RGA conversion failed: " << imStrError(result) << "\n";
+        return nullptr;
+    }
+    return output;
 }
 
 bool CaptureThread::open_device() {
@@ -220,13 +270,16 @@ bool CaptureThread::init_buffers() {
         buf.index  = i;
         if (ioctl(fd_, VIDIOC_QUERYBUF, &buf) == -1) return false;  
 
-        // 将内核缓冲区映射到用户空间，后续直接读取无需系统调用拷贝
-        //缓冲区的用户态地址 + 缓冲区容量
-        buffers_[i].length = buf.length;                       
-        buffers_[i].start  = mmap(nullptr, buf.length,
-                                   PROT_READ | PROT_WRITE, MAP_SHARED,
-                                   fd_, buf.m.offset);
-        if (buffers_[i].start == MAP_FAILED) return false;
+        buffers_[i].length = buf.length;
+        struct v4l2_exportbuffer exported{};
+        exported.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        exported.index = i;
+        exported.flags = O_CLOEXEC | O_RDWR;
+        if (ioctl(fd_, VIDIOC_EXPBUF, &exported) == -1) {
+            std::cerr << "[Capture] VIDIOC_EXPBUF failed: " << strerror(errno) << "\n";
+            return false;
+        }
+        buffers_[i].dma_fd = exported.fd;
     }
     return true;
 }
@@ -253,10 +306,9 @@ void CaptureThread::stop_stream() {
 }
 
 void CaptureThread::close_device() {
-    // 释放所有 mmap 映射，再关闭设备 fd
+    // 关闭导出的 DMA-BUF fd，再关闭采集设备。
     for (auto& b : buffers_) {
-        if (b.start && b.start != MAP_FAILED)
-            munmap(b.start, b.length);
+        if (b.dma_fd >= 0) close(b.dma_fd);
     }
     buffers_.clear();
     if (fd_ != -1) { close(fd_); fd_ = -1; }
