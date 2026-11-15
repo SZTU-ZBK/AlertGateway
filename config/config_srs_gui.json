@@ -50,20 +50,22 @@
     "draw_detection_labels": true,
     "detection_alignment_delay_frames": 3,
     "sink": "fixed_rtmp",
-    "rtmp_url": "rtmp://127.0.0.1:1935/live/alertgateway",
+    "rtmp_url": "rtmp://10.34.1.251:1935/live/alertgateway",
     "bitrate_kbps": 2000
   },
   "mqtt": {
-    "broker": "127.0.0.1",
+    "broker": "10.34.1.251",
     "port": 18830,
     "topic": "desk/usb_camera",
     "client_id": "AlertGateway-USB-smoke"
   },
   "source": {
-    "type": "v4l2",
-    "device": "/dev/video-usbcamera0",
+    "type": "pull_stream",
+    "url": "rtmp://10.34.1.251:1935/live/testsrc2",
     "width": 640,
     "height": 480,
-    "fps": 30
+    "fps": 30,
+    "reconnect_sec": 5,
+    "hardware_decode": false
   }
 }
