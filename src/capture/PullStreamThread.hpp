@@ -18,13 +18,12 @@ struct PullStreamConfig {
     int output_height = 0;
     int fps;                  // 期望帧率
     int reconnect_sec = 5;    // 断线重连等待秒数，默认 5 秒
-    bool hardware_decode = false; // 使用板端 h264/hevc_rkmpp 输出 DRM_PRIME
 };
 
 // PullStreamThread：实现 IVideoSource 接口的拉流线程。
 //
-// 使用 FFmpeg 从 SRS 等服务器拉取 H.264/H.265 码流，在本地软解码为 YUV 图像，
-// 然后进行 NV12 格式转置后填入队列，驱动下游 InferThread 与 EncodeThread。
+// 使用 FFmpeg 从 SRS 等服务器拉取 H.264/H.265 码流，通过 Rockchip MPP 硬解码为图像，
+// 然后通过 RGA 缩放或直接复用 NV12 DMA buffer 后填入队列，驱动下游 InferThread 与 EncodeThread。
 //
 // 队列投递规则与 CaptureThread 一致：
 //   enc_queue  — 阻塞投递，平滑背压，避免漏帧
