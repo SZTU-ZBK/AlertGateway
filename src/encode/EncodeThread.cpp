@@ -527,13 +527,14 @@ void EncodeThread::run() {
         ++input_frames;
 
         // 硬解码路径已经提供可导入的 MPP DRM buffer；普通采集/兼容路径才在这里申请编码 buffer。
+        // frame_buf 是 MPP 缓冲区的管理句柄；`mpp_buffer_get_ptr(frame_buf)` 返回这块缓冲区中像素数据的 CPU 虚拟地址。
         MppBuffer frame_buf = nullptr;
         bool owns_frame_buffer = false;
         MPP_RET ret = MPP_OK;
-        if (frame.buffer_fd() >= 0 && frame.pixel_format == PixelFormat::NV12) {
+        if (frame.buffer_fd() >= 0 && frame.pixel_format == PixelFormat::NV12) {//如果前面用的是RGA硬件解码，就复用RGA的内存，不需要再次申请
             frame_buf = frame.dma_buffer->buffer;
-        } else {
-            ret = mpp_buffer_get(buf_group_, &frame_buf, frame_size);
+        } else {//如果用的是软解码就需要申请内存
+            ret = mpp_buffer_get(buf_group_, &frame_buf, frame_size); //申请一份mpp_buffer内存
             owns_frame_buffer = true;
             if (ret != MPP_OK || !frame_buf) {
                 std::cerr << "[Encode] mpp_buffer_get failed: " << ret << "\n";
@@ -547,20 +548,13 @@ void EncodeThread::run() {
             continue;
         }
 
-        if (frame.buffer_fd() >= 0 && frame.pixel_format == PixelFormat::NV12) {
-            // 拉流硬解码/RGA 已经生成了 MPP DRM buffer，直接交给编码器，避免
-            // DMA-BUF -> CPU vector -> 编码 DRM buffer 的往返拷贝。
-            frame_buf = frame.dma_buffer->buffer;
-            drm_ptr = static_cast<uint8_t*>(mpp_buffer_get_ptr(frame_buf));
-            if (!drm_ptr) {
-                std::cerr << "[Encode] decoded DMA buffer has no CPU mapping\n";
-                continue;
-            }
+        if (frame.pixel_format == PixelFormat::NV12 && frame.buffer_fd() >= 0) {
+            // 工况 1：NV12 DMA buffer。前面已复用输入 buffer，drm_ptr 已指向其像素，无需拷贝。
         } else if (frame.pixel_format == PixelFormat::NV12) {
-            // 输入已经是 NV12，直接拷贝到 MPP 的 DRM 缓冲区，完全避免格式转换
+            // 工况 2：普通内存 NV12。拷贝到前面新申请的 MPP buffer，无需格式转换。
             memcpy(drm_ptr, frame.raw_data.data(), frame_size);
-        } else {
-            // YUYV → NV12：RGA 直接写入 DRM buffer，失败时回退 CPU + memcpy 兜底
+        } else if (frame.pixel_format == PixelFormat::YUYV && frame.buffer_fd() < 0) {
+            // 工况 3：普通内存 YUYV。RGA 转换到 NV12，失败时回退 CPU + memcpy。
             bool rga_ok = rga_yuyv_to_nv12(frame.raw_data.data(), drm_ptr, w, h);
             if (!rga_ok) {
                 yuyv_to_nv12(frame.raw_data.data(), nv12_buf.data(), w, h);
@@ -570,11 +564,14 @@ void EncodeThread::run() {
                               << rga_fail_count << " times)\n" << std::flush;
                 }
             }
+        } else {
+            std::cerr << "[Encode] unsupported input pixel format or buffer storage\n";
+            if (owns_frame_buffer) mpp_buffer_put(frame_buf);
+            continue;
         }
 
-
         // 当前帧先完整写入 DRM buffer，再叠加与其 PTS 对齐的检测结果。
-        const auto display = shared_dets_.get_for_pts(frame.pts_ms);
+        const auto display = shared_dets_.get_for_pts(frame.pts_ms);//从历史快照中，选择时间不晚于当前视频帧的最近一份。
         audit_render_overlaps(display, frame);
         const int detection_box_thickness = (w >= 3840 && h >= 2160) ? 6 : 2;
         for (const auto& det : display.detections) {
@@ -614,14 +611,14 @@ void EncodeThread::run() {
         // reflect the real frame spacing instead of pretending every frame
         // arrived at a fixed 30 FPS cadence.
         mpp_frame_set_pts(mpp_frame,        frame.pts_ms); //展示时间
-        mpp_frame_set_buffer(mpp_frame,     frame_buf);
+        mpp_frame_set_buffer(mpp_frame,     frame_buf); //这里把frame buf的对象和mpp_frame关联到了一起，前面通过 drm_ptr 画框修改的，就是 frame_buf 对应的图像内存
         mpp_frame_set_eos(mpp_frame,        0);
 
         // 把这一帧真正"喂"给硬件编码器
         ret = mpi_->encode_put_frame(ctx_, mpp_frame);
         // 销毁 MppFrame 这个"描述符"对象
         mpp_frame_deinit(&mpp_frame);
-        if (owns_frame_buffer) mpp_buffer_put(frame_buf);
+        if (owns_frame_buffer) mpp_buffer_put(frame_buf);//如果这个frame_buf是自己申请的，就需要手动销毁，否则等frame对象离开作用域之后自己会销毁。
         if (ret != MPP_OK) {
             std::cerr << "[Encode] encode_put_frame failed: " << ret << "\n";
             ++put_failures;
@@ -659,7 +656,7 @@ void EncodeThread::run() {
             ++encoded_packets;
             encoded_bytes += len;
             mpp_packet_deinit(&packet);
-            if (!out_queue_.push(std::move(ep), 0)) ++out_dropped;
+            if (!out_queue_.push(std::move(ep), 0)) ++out_dropped; //非阻塞，允许丢帧
             packet = nullptr;
         }
 
