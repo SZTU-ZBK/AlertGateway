@@ -340,8 +340,11 @@ cmake -S . -B build-atk-arm64 \
 cmake --build build-atk-arm64 -j4
 ```
 
-构建产物和 Paho 运行库收集到 `build-atk-arm64/deploy`。需要部署时运行
-`./upload_to_board.sh`。若有与目标镜像配套的完整 sysroot，可在新构建目录配置时用
+默认依赖目录内有 `third_party/atk-arm64/ffmpeg-rkmpp` 时，CMake 使用其中配套的
+FFmpeg 4.4.1 RKMPP 头文件和链接库。构建产物、Paho 和这套 FFmpeg 运行库
+收集到 `build-atk-arm64/deploy`，运行 `./upload_to_board.sh` 一起上传。
+FFmpeg 库随应用部署，板端 `start.sh` 优先加载应用目录里的版本。
+若有与目标镜像配套的完整 sysroot，可在新构建目录配置时用
 `-DALERTGATEWAY_SYSROOT=/path/to/sysroot` 指定。切换工具链或镜像时使用新的构建目录。
 
 ## 运行

@@ -16,9 +16,13 @@ fi
 
 APP="$BUILD_DIR/AlertGateway"
 PAHO_DIR="$PROJECT_DIR/third_party/paho/install-arm64/lib"
+FFMPEG_DIR=
 if [[ -f "$BUILD_DIR/deploy/AlertGateway" && ! "$APP" -nt "$BUILD_DIR/deploy/AlertGateway" ]]; then
     APP="$BUILD_DIR/deploy/AlertGateway"
     PAHO_DIR="$BUILD_DIR/deploy/lib"
+    if [[ -d "$PAHO_DIR/ffmpeg-rkmpp" ]]; then
+        FFMPEG_DIR="$PAHO_DIR/ffmpeg-rkmpp"
+    fi
 elif [[ -f "$BUILD_DIR/lib/libpaho-mqtt3a.so.1" && -f "$BUILD_DIR/lib/libpaho-mqttpp3.so.1" ]]; then
     PAHO_DIR="$BUILD_DIR/lib"
 fi
@@ -42,6 +46,11 @@ install -m 755 -- "$LAUNCHER" "$stage/start.sh"
 install -m 644 -- "$CONFIG" "$stage/config_srs_gui.json"
 install -m 644 -- "$MODEL" "$stage/model/"
 install -m 644 -- "${LIBRARIES[@]/#/$PAHO_DIR/}" "$stage/lib/"
+if [[ -n "$FFMPEG_DIR" ]]; then
+    FFMPEG_LIBRARIES=(libavcodec.so.58 libavformat.so.58 libavutil.so.56 libswresample.so.3)
+    mkdir "$stage/lib/ffmpeg-rkmpp"
+    install -m 644 -- "${FFMPEG_LIBRARIES[@]/#/$FFMPEG_DIR/}" "$stage/lib/ffmpeg-rkmpp/"
+fi
 
 # Fully receive the archive before replacing any deployed file.
 printf '上传至 %s@%s:%s\n' "$BOARD_USER" "$BOARD_IP" "$REMOTE_DIR"
@@ -52,6 +61,10 @@ tar -C "$stage" -cf - . |
         trap 'rm -rf -- \"\$staging\"' EXIT
         tar -xf - -C \"\$staging\"
         mkdir -p \"\$dest/lib\" \"\$dest/model\"
+        rm -rf -- \"\$dest/lib/ffmpeg-rkmpp\"
+        if [ -d \"\$staging/lib/ffmpeg-rkmpp\" ]; then
+            mv -- \"\$staging/lib/ffmpeg-rkmpp\" \"\$dest/lib/ffmpeg-rkmpp\"
+        fi
         for file in lib/libpaho-mqtt3a.so.1 lib/libpaho-mqttpp3.so.1 model/yolov8s_rockchip_dfl.rknn config_srs_gui.json start.sh AlertGateway; do
             mv -f -- \"\$staging/\$file\" \"\$dest/\$file\"
         done"

@@ -12,5 +12,6 @@ if [ ! -x "$program" ] || [ ! -r "$config" ]; then
     printf '请检查 %s 下的 %s 和 %s。\n' "$app_dir" "$program" "$config" >&2
     exit 1
 fi
-export LD_LIBRARY_PATH="$app_dir/${lib_dir#./}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+lib_dir="$app_dir/${lib_dir#./}"
+export LD_LIBRARY_PATH="$lib_dir/ffmpeg-rkmpp:$lib_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$program" "$config"

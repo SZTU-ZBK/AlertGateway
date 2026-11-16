@@ -140,7 +140,9 @@ void ChannelPipeline::build() {
             processing_height = pull_cfg.output_height;
             pull_cfg.fps = source_fps;
             pull_cfg.reconnect_sec = source.value("reconnect_sec", 5);
-            pull_cfg.hardware_decode = source.value("hardware_decode", false);
+            if (!source.value("hardware_decode", true)) {
+                throw std::runtime_error("Config error: pull_stream only supports hardware decoding");
+            }
         } else {
             camera_cfg.channel_id = channel_id_;
             camera_cfg.device = source.at("device").get<std::string>();

@@ -17,14 +17,6 @@ extern "C" {
 #include <libavutil/opt.h>
 }
 
-// Rockchip FFmpeg 的 AV_PIX_FMT_DRM_PRIME data[0] 以 AVDRMFrameDescriptor 开头，
-// 后面紧跟 MPP buffer 引用。这里使用与 hwcontext_rkmpp.h 相同的 ABI 前缀，避免
-// 交叉编译 sysroot 缺少 libdrm 的 drm_fourcc.h 时无法包含该私有扩展头。
-struct RkMppDrmFrameDescriptor {
-    AVDRMFrameDescriptor drm_desc;
-    MppBuffer buffers[AV_DRM_MAX_PLANES];
-};
-
 // 只接受 DMA-BUF 描述符输出，图像缩放由 RGA 完成。
 static AVPixelFormat choose_drm_prime(AVCodecContext*, const AVPixelFormat* formats) {
     for (const AVPixelFormat* format = formats; *format != AV_PIX_FMT_NONE; ++format) {
@@ -356,15 +348,15 @@ void PullStreamThread::run() {
 
                     const bool drm_frame = frame->format == AV_PIX_FMT_DRM_PRIME; // 仅处理硬解码的 DRM_PRIME 输出
                     if (drm_frame) {
-                        const auto* descriptor = reinterpret_cast<const RkMppDrmFrameDescriptor*>(frame->data[0]);
-                        if (!descriptor || descriptor->drm_desc.nb_objects <= 0 ||
-                            descriptor->drm_desc.nb_objects > AV_DRM_MAX_PLANES ||
-                            descriptor->drm_desc.nb_layers != 1) {
+                        const auto* descriptor = reinterpret_cast<const AVDRMFrameDescriptor*>(frame->data[0]);
+                        if (!descriptor || descriptor->nb_objects <= 0 ||
+                            descriptor->nb_objects > AV_DRM_MAX_PLANES ||
+                            descriptor->nb_layers != 1) {
                             std::cerr << log_tag() << "[PullStream] invalid DRM_PRIME descriptor\n";
                             av_frame_unref(frame);
                             continue;
                         }
-                        const auto& layer = descriptor->drm_desc.layers[0];
+                        const auto& layer = descriptor->layers[0];
                         // DRM_FORMAT_NV12 FourCC，避免引入板端缺失的 drm_fourcc.h。
                         constexpr uint32_t nv12_fourcc = 0x3231564e;
                         if (layer.format != nv12_fourcc || layer.nb_planes != 2) {
@@ -374,55 +366,48 @@ void PullStreamThread::run() {
                         }
                         const auto& plane = layer.planes[0];
                         const int object_index = plane.object_index;
-                        if (object_index < 0 || object_index >= descriptor->drm_desc.nb_objects) {
+                        if (object_index < 0 || object_index >= descriptor->nb_objects) {
                             av_frame_unref(frame);
                             continue;
                         }
-                        const int src_fd = descriptor->drm_desc.objects[object_index].fd;
+                        const int src_fd = descriptor->objects[object_index].fd;
                         const int src_stride = static_cast<int>(plane.pitch);
-                        MppBuffer src_buffer = descriptor->buffers[object_index];
                         // 从 UV 偏移推导垂直 stride，支持解码器的行高对齐填充。
-                        if (src_fd < 0 || src_stride < w || !src_buffer || plane.offset != 0 ||
+                        if (src_fd < 0 || src_stride < w || plane.offset != 0 ||
                             layer.planes[1].object_index != object_index ||
                             layer.planes[1].pitch != plane.pitch ||
                             layer.planes[1].offset < plane.pitch * h ||
                             layer.planes[1].offset % plane.pitch != 0 ||
-                            descriptor->drm_desc.objects[object_index].format_modifier != 0) {
+                            descriptor->objects[object_index].format_modifier != 0) {
                             std::cerr << log_tag() << "[PullStream] unsupported DMA-BUF layout\n";
                             av_frame_unref(frame);
                             continue;
                         }
 
                         const int src_vstride = static_cast<int>(layer.planes[1].offset / plane.pitch);
-                        // stride 不匹配时也通过 RGA 整理成下游要求的紧凑布局。
-                        if (resize_after_decode || src_stride != output_width || src_vstride != output_height) {
-                            MppBuffer output_buffer = nullptr; //输出的buffer句柄由MPP创建
-                            if (mpp_buffer_get(output_buffer_group_, &output_buffer, frame_size) != MPP_OK ||
-                                !output_buffer) {
-                                std::cerr << log_tag() << "[PullStream] DRM output buffer allocation failed\n";
-                                av_frame_unref(frame);
-                                continue;
-                            }
-                            const int dst_fd = mpp_buffer_get_fd(output_buffer);
-                            const int dst_stride = output_width;
-                            const auto resize_started = std::chrono::steady_clock::now();
-                            const bool rga_ok = rga_resize_fd(src_fd, src_stride, src_vstride, dst_fd, dst_stride,
-                                                             w, h, output_width, output_height);
-                            resize_us += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                                std::chrono::steady_clock::now() - resize_started).count());
-                            ++resize_frames;
-                            if (!rga_ok) {
-                                mpp_buffer_put(output_buffer);
-                                av_frame_unref(frame);
-                                continue;
-                            }
-                            frame_obj.dma_buffer = std::make_shared<MppBufferHolder>(output_buffer);
-                            frame_obj.dma_stride = dst_stride;
-                        } else {
-                            mpp_buffer_inc_ref(src_buffer);//要对原始的 DMA-BUF 句柄增加引用计数，避免在 frame_obj 使用完毕前被释放
-                            frame_obj.dma_buffer = std::make_shared<MppBufferHolder>(src_buffer);//不需要resize的话，直接把原来的SRC_BUFFER的句柄传给frame_obj，后续使用完毕后会自动释放
-                            frame_obj.dma_stride = src_stride;
+                        // 复制到应用自己的缓冲，避免叠框修改解码器的参考帧。
+                        MppBuffer output_buffer = nullptr; //输出的buffer句柄由MPP创建
+                        if (mpp_buffer_get(output_buffer_group_, &output_buffer, frame_size) != MPP_OK ||
+                            !output_buffer) {
+                            std::cerr << log_tag() << "[PullStream] DRM output buffer allocation failed\n";
+                            av_frame_unref(frame);
+                            continue;
                         }
+                        const int dst_fd = mpp_buffer_get_fd(output_buffer);
+                        const int dst_stride = output_width;
+                        const auto resize_started = std::chrono::steady_clock::now();
+                        const bool rga_ok = rga_resize_fd(src_fd, src_stride, src_vstride, dst_fd, dst_stride,
+                                                         w, h, output_width, output_height);
+                        resize_us += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - resize_started).count());
+                        ++resize_frames;
+                        if (!rga_ok) {
+                            mpp_buffer_put(output_buffer);
+                            av_frame_unref(frame);
+                            continue;
+                        }
+                        frame_obj.dma_buffer = std::make_shared<MppBufferHolder>(output_buffer);
+                        frame_obj.dma_stride = dst_stride;
                     } else {
                         // 不再接受 CPU 像素输出格式。
                         if (warn_count++ % 100 == 0) {

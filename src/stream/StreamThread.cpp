@@ -31,17 +31,18 @@ StreamThread::~StreamThread() { stop(); }
 
 // 由 main 调用一次：先初始化FFmpeg网络子系统(全局只需一次)，再建立首次RTMP连接；
 // 连接失败直接抛异常终止启动——推流是流水线终点，连不上没有降级方案。
-// 成功后置 running_=true 并起 run() 所在的工作线程。
+// 建连时启用网络中断回调，成功后启动工作线程。
 void StreamThread::start() {
     if (cfg_.sink == StreamSinkType::FixedRtmp) {
         int ret = avformat_network_init();
         if (ret < 0)
             throw std::runtime_error("StreamThread: avformat_network_init failed");
     }
+    running_ = true;
     if (cfg_.sink != StreamSinkType::MetricsOnly && !open_rtmp()) {
+        running_ = false;
         throw std::runtime_error("StreamThread: failed to open " + cfg_.rtmp_url);
     }
-    running_ = true;
     thread_ = std::thread(&StreamThread::run, this);
 }
 
@@ -80,8 +81,12 @@ bool StreamThread::open_rtmp() {
     AVDictionary* opts = nullptr;
     if (cfg_.sink == StreamSinkType::FixedRtmp) {
         av_dict_set_int(&opts, "rtmp_buffer_size", 0, 0);  // 禁用 RTMP 客户端缓冲
+        av_dict_set_int(&opts, "rw_timeout", 5000000, 0);
+        ctx->interrupt_callback = {[](void* opaque) -> int {
+            return !static_cast<StreamThread*>(opaque)->running_.load();
+        }, this};
     }
-    ret = avio_open2(&ctx->pb, cfg_.rtmp_url.c_str(), AVIO_FLAG_WRITE, nullptr, &opts);
+    ret = avio_open2(&ctx->pb, cfg_.rtmp_url.c_str(), AVIO_FLAG_WRITE, &ctx->interrupt_callback, &opts);
     av_dict_free(&opts);
     if (ret < 0) { avformat_free_context(ctx); return false; }
 

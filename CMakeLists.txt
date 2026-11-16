@@ -33,6 +33,22 @@ include_directories(BEFORE
 )
 
 set(FFMPEG_LIB "${BOARD_DEPS}/lib")
+set(FFMPEG_RKMPP "${TP}/atk-arm64/ffmpeg-rkmpp")
+set(FFMPEG_DEPLOY_DIR "${CMAKE_BINARY_DIR}/deploy/lib/ffmpeg-rkmpp")
+if(NOT ALERTGATEWAY_SYSROOT AND BOARD_DEPS STREQUAL "${TP}/atk-arm64"
+   AND IS_DIRECTORY "${FFMPEG_RKMPP}")
+    set(FFMPEG_LIB "${FFMPEG_RKMPP}/lib")
+    set(FFMPEG_RUNTIME_LIBS
+        "${FFMPEG_LIB}/libavcodec.so.58"
+        "${FFMPEG_LIB}/libavformat.so.58"
+        "${FFMPEG_LIB}/libavutil.so.56"
+        "${FFMPEG_LIB}/libswresample.so.3")
+    foreach(lib IN LISTS FFMPEG_RUNTIME_LIBS)
+        if(NOT EXISTS "${lib}")
+            message(FATAL_ERROR "Incomplete RKMPP FFmpeg bundle: ${lib}")
+        endif()
+    endforeach()
+endif()
 set(MPP_LIB "${BOARD_DEPS}/lib/librockchip_mpp.so")
 set(RGA_LIB "${BOARD_DEPS}/lib/librga.so")
 set(RKNN_LIB_PATH "${BOARD_DEPS}/lib/librknnrt.so" CACHE FILEPATH "RKNN runtime library")
@@ -64,6 +80,9 @@ add_executable(AlertGateway ${SOURCES})
 set_target_properties(AlertGateway PROPERTIES SKIP_BUILD_RPATH TRUE)
 
 target_include_directories(AlertGateway PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(FFMPEG_RUNTIME_LIBS)
+    target_include_directories(AlertGateway BEFORE PRIVATE "${FFMPEG_RKMPP}/include")
+endif()
 
 if(NOT EXISTS "${RKNN_LIB_PATH}")
     message(FATAL_ERROR "RKNN link library not found: ${RKNN_LIB_PATH}")
@@ -85,9 +104,9 @@ target_link_libraries(AlertGateway PRIVATE
 # are present on the board but not in the cross-compile sysroot.
 target_link_options(AlertGateway PRIVATE -Wl,--allow-shlib-undefined)
 
-# Collect the application and locally built Paho runtime libraries for upload.
-# Rockchip/FFmpeg libraries are supplied by the matching board image.
+# Collect application-private runtime libraries for upload.
 add_custom_command(TARGET AlertGateway POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove_directory "${FFMPEG_DEPLOY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/deploy/lib"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:AlertGateway>" "${CMAKE_BINARY_DIR}/deploy/AlertGateway"
@@ -97,6 +116,14 @@ add_custom_command(TARGET AlertGateway POST_BUILD
         "${PAHO_CPP_LIB}" "${CMAKE_BINARY_DIR}/deploy/lib/libpaho-mqttpp3.so.1"
     VERBATIM
 )
+if(FFMPEG_RUNTIME_LIBS)
+    add_custom_command(TARGET AlertGateway POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${FFMPEG_DEPLOY_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${FFMPEG_RUNTIME_LIBS} "${FFMPEG_DEPLOY_DIR}"
+        VERBATIM
+    )
+endif()
 
 # Standalone RKNN microbenchmark used for controlled model comparisons.
 # Disabled by default so the production build remains unchanged.

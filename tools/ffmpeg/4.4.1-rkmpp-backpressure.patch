@@ -1,0 +1,113 @@
+--- a/libavcodec/rkmppdec.c
++++ b/libavcodec/rkmppdec.c
+@@ -38,9 +38,8 @@
+ #include "libavutil/imgutils.h"
+ #include "libavutil/log.h"
+ 
+-#define RECEIVE_FRAME_TIMEOUT   100
++#define RECEIVE_FRAME_TIMEOUT     1
+ #define FRAMEGROUP_MAX_FRAMES   16
+-#define INPUT_MAX_PACKETS       4
+ 
+ typedef struct {
+     MppCtx ctx;
+@@ -49,6 +48,8 @@
+ 
+     char first_packet;
+     char eos_reached;
++    int packet_pending;
++    AVPacket pending_packet;
+ 
+     AVBufferRef *frames_ref;
+     AVBufferRef *device_ref;
+@@ -132,6 +133,7 @@
+ {
+     RKMPPDecoder *decoder = (RKMPPDecoder *)data;
+ 
++    av_packet_unref(&decoder->pending_packet);
+     if (decoder->mpi) {
+         decoder->mpi->reset(decoder->ctx);
+         mpp_destroy(decoder->ctx);
+@@ -275,8 +277,8 @@
+     // handle EOF
+     if (!avpkt->size) {
+         av_log(avctx, AV_LOG_DEBUG, "End of stream.\n");
+-        decoder->eos_reached = 1;
+         ret = rkmpp_write_data(avctx, NULL, 0, 0);
++        if (!ret) decoder->eos_reached = 1;
+         if (ret)
+             av_log(avctx, AV_LOG_ERROR, "Failed to send EOS to decoder (code = %d)\n", ret);
+         return ret;
+@@ -469,8 +471,6 @@
+             av_log(avctx, AV_LOG_ERROR, "Failed to retrieve the frame buffer, frame is dropped (code = %d)\n", ret);
+             mpp_frame_deinit(&mppframe);
+         }
+-    } else if (decoder->eos_reached) {
+-        return AVERROR_EOF;
+     } else if (ret == MPP_ERR_TIMEOUT) {
+         av_log(avctx, AV_LOG_DEBUG, "Timeout when trying to get a frame from MPP\n");
+     }
+@@ -497,37 +497,26 @@
+ {
+     RKMPPDecodeContext *rk_context = avctx->priv_data;
+     RKMPPDecoder *decoder = (RKMPPDecoder *)rk_context->decoder_ref->data;
+-    int ret = MPP_NOK;
+-    AVPacket pkt = {0};
+-    RK_S32 usedslots, freeslots;
++    int ret;
+ 
+-    if (!decoder->eos_reached) {
+-        // we get the available slots in decoder
+-        ret = decoder->mpi->control(decoder->ctx, MPP_DEC_GET_STREAM_COUNT, &usedslots);
+-        if (ret != MPP_OK) {
+-            av_log(avctx, AV_LOG_ERROR, "Failed to get decoder used slots (code = %d).\n", ret);
++    if (!decoder->eos_reached && !decoder->packet_pending) {
++        ret = ff_decode_get_packet(avctx, &decoder->pending_packet);
++        if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
+             return ret;
+-        }
+-
+-        freeslots = INPUT_MAX_PACKETS - usedslots;
+-        if (freeslots > 0) {
+-            ret = ff_decode_get_packet(avctx, &pkt);
+-            if (ret < 0 && ret != AVERROR_EOF) {
+-                return ret;
+-            }
+-
+-            ret = rkmpp_send_packet(avctx, &pkt);
+-            av_packet_unref(&pkt);
++        decoder->packet_pending = ret != AVERROR(EAGAIN);
++    }
+ 
+-            if (ret < 0) {
+-                av_log(avctx, AV_LOG_ERROR, "Failed to send packet to decoder (code = %d)\n", ret);
+-                return ret;
+-            }
++    // A full input queue needs to be drained before retrying the same packet.
++    for (int attempt = 0; decoder->packet_pending && attempt < 100; ++attempt) {
++        ret = rkmpp_send_packet(avctx, &decoder->pending_packet);
++        if (ret != AVERROR(EAGAIN)) {
++            av_packet_unref(&decoder->pending_packet);
++            decoder->packet_pending = 0;
++            if (ret < 0) return ret;
++            break;
+         }
+-
+-        // make sure we keep decoder full
+-        if (freeslots > 1)
+-            return AVERROR(EAGAIN);
++        ret = rkmpp_retrieve_frame(avctx, frame);
++        if (ret != AVERROR(EAGAIN)) return ret;
+     }
+ 
+     return rkmpp_retrieve_frame(avctx, frame);
+@@ -541,6 +530,9 @@
+ 
+     av_log(avctx, AV_LOG_DEBUG, "Flush.\n");
+ 
++    av_packet_unref(&decoder->pending_packet);
++    decoder->packet_pending = 0;
++    decoder->eos_reached = 0;
+     ret = decoder->mpi->reset(decoder->ctx);
+     if (ret == MPP_OK) {
+         decoder->first_packet = 1;
