@@ -98,7 +98,7 @@ void InferThread::on_scheduled_result(const NpuInferenceResult& result) {
     shared_dets_.update(result.detections, result.frame_id, result.pts_ms,
                         result.frame_width, result.frame_height);
     std::cout << "[Infer] channel=" << cfg_.channel_id
-              << " scheduler cpu:" << result.preprocess_ms
+              << " scheduler preprocess:" << result.preprocess_ms
               << " cpy:" << result.input_sync_ms
               << " npu:" << result.npu_ms
               << " cnv:" << result.output_postprocess_ms
@@ -432,7 +432,7 @@ void InferThread::run() {
 
             auto ms = [](auto a, auto b){ return std::chrono::duration<float,std::milli>(b-a).count(); };
             std::cout << "[Infer] channel=" << cfg_.channel_id
-                      << " cpu:" << ms(t0,t1) << " cpy:" << ms(t1,t2)
+                      << " preprocess:" << ms(t0,t1) << " cpy:" << ms(t1,t2)
                       << " npu:" << ms(t2,t3) << " cnv:" << ms(t3,t4)
                       << " total:" << ms(t0,t4) << " ms objs:" << last_detections.size() << "\n" << std::flush;
 
