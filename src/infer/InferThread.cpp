@@ -235,87 +235,17 @@ bool InferThread::load_model() {
     return true;
 }
 
-// CPU 路径：NV12 (4:2:0 Semi-Planar) → RGB888 颜色空间转换，按 BT.601 标准公式。
-// 仅作为 RGA 硬件转换失败时的兜底。
-static void nv12_to_rgb(const uint8_t* nv12, uint8_t* rgb, int width, int height) {
-    auto clamp = [](int v) -> uint8_t {
-        return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
-    };
-    const uint8_t* y_plane = nv12;
-    const uint8_t* uv_plane = nv12 + width * height;
-    for (int i = 0; i < height; i++) {
-        for (int j = 0; j < width; j++) {
-            int y = y_plane[i * width + j];
-            int uv_idx = (i / 2) * width + (j & ~1);
-            int u = uv_plane[uv_idx];
-            int v = uv_plane[uv_idx + 1];
-
-            int c = y - 16;
-            int d = u - 128;
-            int e = v - 128;
-
-            int rgb_idx = (i * width + j) * 3;
-            rgb[rgb_idx + 0] = clamp((298 * c + 409 * e + 128) >> 8);
-            rgb[rgb_idx + 1] = clamp((298 * c - 100 * d - 208 * e + 128) >> 8);
-            rgb[rgb_idx + 2] = clamp((298 * c + 516 * d + 128) >> 8);
-        }
-    }
-}
-
-// CPU 路径：YUYV422 → RGB888 颜色空间转换，按 BT.601 标准公式逐像素计算。
-// 只在 RGA 硬件转换失败时作为兜底调用（见 rga_yuyv_to_rgb_resize 的返回值检查），
-// 正常情况下不会走这里，纯CPU计算比RGA慢很多。
-// YUYV422 每2个像素共享一组 U/V，所以内层循环 j 每次步进2，一次处理一对像素(y0,y1)。
-static void yuyv_to_rgb(const uint8_t* yuyv, uint8_t* rgb, int width, int height) {
-    auto clamp = [](int v) -> uint8_t {
-        return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
-    };
-    for (int i = 0; i < height; i++) {
-        for (int j = 0; j < width; j += 2) {
-            int base = (i * width + j) * 2;
-            int y0 = yuyv[base],   u = yuyv[base+1];
-            int y1 = yuyv[base+2], v = yuyv[base+3];
-            int c0 = y0-16, c1 = y1-16, d = u-128, e = v-128;
-            int out = (i * width + j) * 3;
-            rgb[out+0] = clamp((298*c0 + 409*e + 128) >> 8);
-            rgb[out+1] = clamp((298*c0 - 100*d - 208*e + 128) >> 8);
-            rgb[out+2] = clamp((298*c0 + 516*d + 128) >> 8);
-            rgb[out+3] = clamp((298*c1 + 409*e + 128) >> 8);
-            rgb[out+4] = clamp((298*c1 - 100*d - 208*e + 128) >> 8);
-            rgb[out+5] = clamp((298*c1 + 516*d + 128) >> 8);
-        }
-    }
-}
-
-// CPU 路径：把 RGB888 图像最近邻缩放到目标尺寸(dw×dh)，配合上面 yuyv_to_rgb 一起
-// 作为 RGA 硬件失败时的兜底（RGA 是硬件一次完成转换+缩放，这里CPU分两步做）。
-// 目标像素(dx,dy)按比例反算回源图坐标(sx,sy)，直接取最近的源像素，不做插值。
-static void resize_rgb(const uint8_t* src, int sw, int sh,
-                        uint8_t* dst, int dw, int dh) {
-    for (int dy = 0; dy < dh; dy++) {
-        int sy = dy * sh / dh;
-        for (int dx = 0; dx < dw; dx++) {
-            int sx = dx * sw / dw;
-            const uint8_t* s = src + (sy * sw + sx) * 3;
-            uint8_t*       d = dst + (dy * dw + dx) * 3;
-            d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
-        }
-    }
-}
-
-// RGA 硬件一次完成 YUYV422 -> RGB888 + 缩放（整图拉伸，不做 letterbox）。
-// 返回 false 时 dst 内容不可信，调用方应回退到 CPU 路径。
-// RGA 硬件一次完成 YUV (YUYV 或 NV12) -> RGB888 + 缩放（整图拉伸，不做 letterbox）。
-// 返回 false 时 dst 内容不可信，调用方应回退到 CPU 路径。
-static bool rga_yuv_to_rgb_resize(const uint8_t* src, int sw, int sh, PixelFormat fmt,
+// DMA-BUF NV12 → RGB888，同时缩放到模型输入尺寸。
+// 失败时目标内容不可用，调用方必须跳过本帧推理。
+static bool rga_yuv_to_rgb_resize(const Frame& frame,
                                   uint8_t* dst, int dw, int dh) {
-    int rga_fmt = (fmt == PixelFormat::NV12) ? RK_FORMAT_YCbCr_420_SP : RK_FORMAT_YUYV_422;
-    rga_buffer_t src_buf = wrapbuffer_virtualaddr(
-        const_cast<uint8_t*>(src), sw, sh, rga_fmt);
+    rga_buffer_t src_buf = wrapbuffer_fd(
+        frame.buffer_fd(), frame.width, frame.height, RK_FORMAT_YCbCr_420_SP,
+        frame.dma_stride > 0 ? frame.dma_stride : frame.width, frame.height);
     rga_buffer_t dst_buf = wrapbuffer_virtualaddr(dst, dw, dh, RK_FORMAT_RGB_888);
     rga_buffer_t pat_buf{};
 
-    im_rect srect{0, 0, sw, sh};
+    im_rect srect{0, 0, frame.width, frame.height};
     im_rect drect{0, 0, dw, dh};
     im_rect prect{0, 0, 0, 0};
 
@@ -338,42 +268,23 @@ struct LetterboxGeometry {
 static LetterboxGeometry letterbox_geometry(int sw, int sh, int dw, int dh) {
     float scale = std::min(static_cast<float>(dw) / sw,
                            static_cast<float>(dh) / sh);
-    // RGA RGB 目标矩形要求偶数起点和尺寸；CPU 回退和后处理共用此几何，
-    // 保证整帧预处理与检测框坐标回映保持一致。
+    // 计算等比例缩放区域，供 RGA letterbox 使用。
     int width = std::max(2, static_cast<int>(std::round(sw * scale)) & ~1);
     int height = std::max(2, static_cast<int>(std::round(sh * scale)) & ~1);
     return {width, height, (dw - width) / 2, (dh - height) / 2};
 }
 
-static void resize_rgb_letterbox(const uint8_t* src, int sw, int sh,
-                                 uint8_t* dst, int dw, int dh) {
-    const auto box = letterbox_geometry(sw, sh, dw, dh);
-    std::fill(dst, dst + static_cast<size_t>(dw) * dh * 3, 114);
-    for (int dy = 0; dy < box.height; ++dy) {
-        int sy = dy * sh / box.height;
-        for (int dx = 0; dx < box.width; ++dx) {
-            int sx = dx * sw / box.width;
-            const uint8_t* source = src + (sy * sw + sx) * 3;
-            uint8_t* target = dst + ((box.top + dy) * dw + box.left + dx) * 3;
-            target[0] = source[0];
-            target[1] = source[1];
-            target[2] = source[2];
-        }
-    }
-}
-
-// RGA 硬件一次完成 YUV (YUYV 或 NV12) -> RGB888 + 缩放并补 114 灰边（Letterbox）。
-// 返回 false 时 dst 内容不可信，调用方应回退到 CPU 路径。
-static bool rga_yuv_to_rgb_letterbox(const uint8_t* src, int sw, int sh, PixelFormat fmt,
+// DMA-BUF NV12 → RGB888 + letterbox，保留目标画布的 114 灰边填充。
+static bool rga_yuv_to_rgb_letterbox(const Frame& frame,
                                     uint8_t* dst, int dw, int dh) {
-    const auto box = letterbox_geometry(sw, sh, dw, dh);
+    const auto box = letterbox_geometry(frame.width, frame.height, dw, dh);
     std::fill(dst, dst + static_cast<size_t>(dw) * dh * 3, 114);
-    int rga_fmt = (fmt == PixelFormat::NV12) ? RK_FORMAT_YCbCr_420_SP : RK_FORMAT_YUYV_422;
-    rga_buffer_t src_buf = wrapbuffer_virtualaddr(
-        const_cast<uint8_t*>(src), sw, sh, rga_fmt);
+    rga_buffer_t src_buf = wrapbuffer_fd(
+        frame.buffer_fd(), frame.width, frame.height, RK_FORMAT_YCbCr_420_SP,
+        frame.dma_stride > 0 ? frame.dma_stride : frame.width, frame.height);
     rga_buffer_t dst_buf = wrapbuffer_virtualaddr(dst, dw, dh, RK_FORMAT_RGB_888);
     rga_buffer_t pat_buf{};
-    im_rect srect{0, 0, sw, sh};
+    im_rect srect{0, 0, frame.width, frame.height};
     im_rect drect{box.left, box.top, box.width, box.height};
     im_rect prect{0, 0, 0, 0};
     IM_STATUS ret = improcess(src_buf, dst_buf, pat_buf, srect, drect, prect, 0);
@@ -426,20 +337,18 @@ std::string InferThread::summary_key(const std::vector<Detection>& dets) {
 //      再非阻塞排空队列里积压的旧帧，保证用的是最新一帧、不会越攒越多。
 //   2) 按 infer_every_n_frames 跳帧：不是该推理的帧只往下走第4步的MQTT节流逻辑，
 //      不做NPU推理（省算力，沿用上一次的 last_detections 上报）。
-//   3) 真正推理的帧：YUYV422→RGB888+缩放到模型输入尺寸（优先走RGA硬件，失败回退CPU），
-//      memcpy进zero-copy输入buf，rknn_run()跑NPU，按配置获取双路浮点输出或九路
+//   3) 真正推理的帧：RGA 将 NV12 DMA-BUF 转 RGB888 并缩放，失败则丢弃当前帧。
+//      RGA 直接写入 RKNN 输入内存，rknn_run()跑NPU，按配置获取双路浮点输出或九路
 //      raw INT8输出并解码成Detection列表，写入shared_dets_供EncodeThread叠框，
 //      并打印各阶段耗时方便定位瓶颈。
 //   4) MQTT上报：按 report_interval_sec 节流，且内容签名相同时不重复推送。
 void InferThread::run() {
     //step 就是"每隔多少帧做一次真正的 NPU 推理"，用来给推理降频。
     const int step = std::max(1, cfg_.infer_every_n_frames);
-    std::vector<uint8_t> rgb_buf;
     // 预处理目标直接使用 RKNN 输入 DMA 内存，避免每帧再复制约 1.2MB。
     auto* input_buf = static_cast<uint8_t*>(input_mem_->virt_addr);
     std::vector<Detection> last_detections;
     int frame_idx = 0;
-    int rga_fail_count = 0;
 
 
     while (running_) {
@@ -456,36 +365,24 @@ void InferThread::run() {
             using clk = std::chrono::steady_clock;
             auto t0 = clk::now();
 
-            // YUYV/NV12 → RGB888 + 缩放，直接写入 RKNN 输入 DMA 内存。
-            // RGA 硬件优先，失败时回退到 CPU 路径。
-            bool use_letterbox = cfg_.output_layout == "rockchip_dfl";
-            //这里传入的frame.raw_data.data()是一个虚拟地址，RGA 既支持通过 DMA-BUF fd 访问图像，也支持通过虚拟地址访问图像。
-            bool rga_ok = use_letterbox  //letterbox：保持宽高比，缩放到目标画布中的一个矩形区域。
-                ? rga_yuv_to_rgb_letterbox(frame.raw_data.data(), frame.width, frame.height, frame.pixel_format,
-                                         input_buf, model_width_, model_height_) //将RGA的输出直接写入RKNN的输入DMA内存
-                : rga_yuv_to_rgb_resize(frame.raw_data.data(), frame.width, frame.height, frame.pixel_format,
-                                         input_buf, model_width_, model_height_);
+            // 当前上游只传 NV12 DMA-BUF；不再兼容普通内存输入。
+            if (frame.buffer_fd() < 0 || frame.pixel_format != PixelFormat::NV12) {
+                std::cerr << "[Infer] expected NV12 DMA-BUF input, frame_id=" << frame.frame_id << "\n";
+                ++frame_idx;
+                continue;
+            }
+            const bool use_letterbox = cfg_.output_layout == "rockchip_dfl";
+            const bool rga_ok = use_letterbox
+                ? rga_yuv_to_rgb_letterbox(frame, input_buf, model_width_, model_height_)
+                : rga_yuv_to_rgb_resize(frame, input_buf, model_width_, model_height_);
             if (!rga_ok) {
-                rgb_buf.resize(frame.width * frame.height * 3);
-                if (frame.pixel_format == PixelFormat::NV12) {
-                    nv12_to_rgb(frame.raw_data.data(), rgb_buf.data(), frame.width, frame.height);
-                } else {
-                    yuyv_to_rgb(frame.raw_data.data(), rgb_buf.data(), frame.width, frame.height);
-                }
-                if (use_letterbox)
-                    resize_rgb_letterbox(rgb_buf.data(), frame.width, frame.height,
-                                         input_buf, model_width_, model_height_);
-                else
-                    resize_rgb(rgb_buf.data(), frame.width, frame.height,
-                               input_buf, model_width_, model_height_);
-                if (++rga_fail_count % 30 == 1) {
-                    std::cerr << "[Infer] RGA path failed, using CPU fallback ("
-                              << rga_fail_count << " times)\n" << std::flush;
-                }
+                std::cerr << "[Infer] RGA preprocessing failed, skipping frame_id=" << frame.frame_id << "\n";
+                ++frame_idx;
+                continue;
             }
             auto t1 = clk::now();
 
-            // RGA/CPU 已经直接写入 RKNN 输入内存；同步 cache 后再启动 NPU。
+            // RGA 已经直接写入 RKNN 输入内存；同步 cache 后再启动 NPU。
             // rknn_set_io_mem 文档要求用户在 rknn_run 前保证输入 cache 一致。
             const int sync_ret = rknn_mem_sync(ctx_, input_mem_, RKNN_MEMORY_SYNC_TO_DEVICE);
             if (sync_ret != RKNN_SUCC) {
