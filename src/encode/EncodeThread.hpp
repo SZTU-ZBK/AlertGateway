@@ -41,6 +41,7 @@ private:
     void run();          // 编码主循环（取 NV12 DMA 帧→画框→硬编码→取包），详见 .cpp
     bool init_mpp();     // 创建MPP编码上下文、配置参数，详见 .cpp
     void deinit_mpp();   // 释放编码上下文 ctx_
+    std::shared_ptr<MppBufferHolder> copy_for_drawing(const Frame& frame);
 
     // 在NV12的Y/UV平面上直接画线/画框，没有用任何图形库，详见 .cpp
     static void draw_hline_nv12(uint8_t* nv12, int w, int h, int x0, int x1, int y,
@@ -79,6 +80,7 @@ private:
 
     MppCtx         ctx_       = nullptr;  // MPP 编码上下文
     MppApi*        mpi_       = nullptr;  // MPP 函数接口表，编解码操作都通过它调用
+    MppBufferGroup drawing_buffer_group_ = nullptr; // 独立绘制副本的 DMA buffer 池
     int64_t        frame_idx_ = 0;        // 累计编码帧数，用于按 cfg_.fps 推算每帧的PTS
     // 同一检测快照通常会被连续编码到多个视频帧；只审计/记录一次，避免重复刷日志。
     uint64_t       last_audited_detection_frame_id_ = UINT64_MAX;

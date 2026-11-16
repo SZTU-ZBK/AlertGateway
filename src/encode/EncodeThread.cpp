@@ -10,6 +10,8 @@
 #include <deque>
 #include <chrono>
 #include "mpp_meta.h"
+#include "im2d.h"
+#include "rga.h"
 static std::string get_display_label(const std::string& label) {
     if (label == "cell phone") return "手机";
     if (label == "cup") return "杯子";
@@ -118,12 +120,50 @@ bool EncodeThread::init_mpp() {
         return false;
     }
 
+    ret = mpp_buffer_group_get_internal(&drawing_buffer_group_, MPP_BUFFER_TYPE_DRM);
+    if (ret != MPP_OK) {
+        std::cerr << "[Encode] drawing buffer group init failed: " << ret << "\n";
+        deinit_mpp();
+        return false;
+    }
     return true;
 }
 
-// 销毁编码上下文，mpi_ 随 ctx_ 一起失效。
+// 先销毁编码上下文，再释放绘制 buffer 池。
 void EncodeThread::deinit_mpp() {
     if (ctx_)       { mpp_destroy(ctx_); ctx_ = nullptr; mpi_ = nullptr; }
+    if (drawing_buffer_group_) {
+        mpp_buffer_group_put(drawing_buffer_group_);
+        drawing_buffer_group_ = nullptr;
+    }
+}
+
+std::shared_ptr<MppBufferHolder> EncodeThread::copy_for_drawing(const Frame& frame) {
+    auto output = std::make_shared<MppBufferHolder>(nullptr);
+    const size_t bytes = static_cast<size_t>(frame.width) * frame.height * 3 / 2;
+    const MPP_RET ret = mpp_buffer_get(drawing_buffer_group_, &output->buffer, bytes);
+    if (ret != MPP_OK || !output->buffer) {
+        std::cerr << "[Encode] drawing buffer allocation failed: " << ret << "\n";
+        return nullptr;
+    }
+    const int dst_fd = mpp_buffer_get_fd(output->buffer);
+    if (dst_fd < 0) {
+        std::cerr << "[Encode] drawing buffer has no DMA fd\n";
+        return nullptr;
+    }
+    auto src = wrapbuffer_fd(frame.buffer_fd(), frame.width, frame.height,
+                             RK_FORMAT_YCbCr_420_SP,
+                             frame.dma_stride > 0 ? frame.dma_stride : frame.width,
+                             frame.height);
+    auto dst = wrapbuffer_fd(dst_fd, frame.width, frame.height,
+                             RK_FORMAT_YCbCr_420_SP, frame.width, frame.height);
+    // 同步复制完成后，CPU 才能绘制副本；共享源图像始终只读。
+    const IM_STATUS result = imcopy(src, dst, 1);
+    if (result != IM_STATUS_SUCCESS) {
+        std::cerr << "[Encode] RGA copy failed: " << imStrError(result) << "\n";
+        return nullptr;
+    }
+    return output;
 }
 
 // 在NV12上手写画线/画框，没有用OpenCV等图形库——直接操作Y/UV两个平面的字节。
@@ -432,9 +472,9 @@ void EncodeThread::draw_detection_label_nv12(uint8_t* nv12, int w, int h,
 //   1) 从 in_queue_ 阻塞取一帧（200ms超时，超时则continue重新检查running_）。
 //      跟 InferThread 不同，这里不排空积压帧——enc_queue 容量只有1，本身就形成背压，
 //      没有"攒帧"的空间，按顺序逐帧编码才能保证视频流畅不丢帧。
-//   2) 校验上游的紧凑 NV12 DMA buffer，取得 CPU 映射用于绘制。
-//   3) 选择与当前 PTS 对齐的检测结果，直接在 NV12 像素上画框和标签。
-//   4) 将同一 buffer 关联到 MppFrame，提交 MPP 编码；保留源媒体时间戳。
+//   2) 校验上游的紧凑 NV12 DMA buffer，共享源图像只读。
+//   3) 有检测框时通过 RGA 创建独立副本，在 CPU 同步访问区间内绘制。
+//   4) 将源图或绘制副本关联到 MppFrame，提交 MPP 编码；保留源媒体时间戳。
 //   5) 取编码结果：encode_put_frame/encode_get_packet 是异步关系，硬件内部有流水线
 //      缓冲，一次put不一定对应一次get，要用while循环把当前能取的包全部取干净，
 //      否则会有包积压、时间戳错位的问题。每个包附带is_keyframe标记（从MppMeta读
@@ -472,35 +512,50 @@ void EncodeThread::run() {
             std::cerr << "[Encode] expected packed NV12 DMA buffer matching encoder dimensions\n";
             continue;
         }
-        // 借用 Frame 持有的 MPP 引用，不在编码线程额外申请或归还输入 buffer。
-        MppBuffer frame_buf = frame.dma_buffer->buffer;
-        uint8_t* drm_ptr = static_cast<uint8_t*>(mpp_buffer_get_ptr(frame_buf));
-        if (!drm_ptr) {
-            std::cerr << "[Encode] input DMA buffer has no CPU mapping for drawing\n";
-            continue;
-        }
-
-        // 在输入 DMA buffer 上叠加与 PTS 对齐的检测结果。
-        const auto display = shared_dets_.get_for_pts(frame.pts_ms);//从历史快照中，选择时间不晚于当前视频帧的最近一份。
+        // 无检测框时直接编码只读源图；需要绘制时才创建独立副本。
+        const auto display = shared_dets_.get_for_pts(frame.pts_ms);
         audit_render_overlaps(display, frame);
-        const int detection_box_thickness = (w >= 3840 && h >= 2160) ? 6 : 2;
-        for (const auto& det : display.detections) {
-            draw_rect_nv12(drm_ptr, w, h,
-                           static_cast<int>(det.x1), static_cast<int>(det.y1),
-                           static_cast<int>(det.x2), static_cast<int>(det.y2),
-                           detection_box_thickness, BOX_Y, BOX_U, BOX_V);
+        MppBuffer frame_buf = frame.dma_buffer->buffer;
+        std::shared_ptr<MppBufferHolder> drawing_buffer;
+        if (!display.detections.empty()) {
+            drawing_buffer = copy_for_drawing(frame);
+            if (!drawing_buffer) continue;
+            frame_buf = drawing_buffer->buffer;
+            auto* drm_ptr = static_cast<uint8_t*>(mpp_buffer_get_ptr(frame_buf));
+            if (!drm_ptr) {
+                std::cerr << "[Encode] drawing buffer has no CPU mapping\n";
+                continue;
+            }
+            const MPP_RET sync_ret = mpp_buffer_sync_begin(frame_buf);
+            if (sync_ret != MPP_OK) {
+                std::cerr << "[Encode] drawing buffer sync begin failed: " << sync_ret << "\n";
+                continue;
+            }
+            const int detection_box_thickness = (w >= 3840 && h >= 2160) ? 6 : 2;
+            for (const auto& det : display.detections) {
+                draw_rect_nv12(drm_ptr, w, h,
+                               static_cast<int>(det.x1), static_cast<int>(det.y1),
+                               static_cast<int>(det.x2), static_cast<int>(det.y2),
+                               detection_box_thickness, BOX_Y, BOX_U, BOX_V);
 
-            if (cfg_.draw_detection_labels) {
-                int confidence_pct = static_cast<int>(det.score * 100.0f);
-                if (confidence_pct < 0) confidence_pct = 0;
-                if (confidence_pct > 100) confidence_pct = 100;
-                std::string label_str =
-                    get_display_label(det.label) + " " + std::to_string(confidence_pct) + "%";
+                if (cfg_.draw_detection_labels) {
+                    int confidence_pct = static_cast<int>(det.score * 100.0f);
+                    if (confidence_pct < 0) confidence_pct = 0;
+                    if (confidence_pct > 100) confidence_pct = 100;
+                    std::string label_str =
+                        get_display_label(det.label) + " " + std::to_string(confidence_pct) + "%";
 
-                draw_detection_label_nv12(drm_ptr, w, h,
-                                          static_cast<int>(det.x1), static_cast<int>(det.y1),
-                                          static_cast<int>(det.x2), static_cast<int>(det.y2),
-                                          label_str);
+                    draw_detection_label_nv12(drm_ptr, w, h,
+                                              static_cast<int>(det.x1), static_cast<int>(det.y1),
+                                              static_cast<int>(det.x2), static_cast<int>(det.y2),
+                                              label_str);
+                }
+            }
+
+            const MPP_RET sync_end_ret = mpp_buffer_sync_end(frame_buf);
+            if (sync_end_ret != MPP_OK) {
+                std::cerr << "[Encode] drawing buffer sync end failed: " << sync_end_ret << "\n";
+                continue;
             }
         }
 
@@ -520,13 +575,13 @@ void EncodeThread::run() {
         // reflect the real frame spacing instead of pretending every frame
         // arrived at a fixed 30 FPS cadence.
         mpp_frame_set_pts(mpp_frame,        frame.pts_ms); //展示时间
-        mpp_frame_set_buffer(mpp_frame,     frame_buf); //这里把frame buf的对象和mpp_frame关联到了一起，前面通过 drm_ptr 画框修改的，就是 frame_buf 对应的图像内存
+        mpp_frame_set_buffer(mpp_frame,     frame_buf); // MppFrame 增持一份 buffer 引用
         mpp_frame_set_eos(mpp_frame,        0);
 
         // 把这一帧真正"喂"给硬件编码器
-        ret = mpi_->encode_put_frame(ctx_, mpp_frame);
+        ret = mpi_->encode_put_frame(ctx_, mpp_frame);//阻塞调用，只有硬件编码器完成了这一帧的读取，不再需要该buffer之后才会返回
         // 销毁 MppFrame 这个"描述符"对象
-        mpp_frame_deinit(&mpp_frame);
+        mpp_frame_deinit(&mpp_frame); // 释放描述符引用，源 Frame 或 drawing_buffer 仍持有 buffer
         if (ret != MPP_OK) {
             std::cerr << "[Encode] encode_put_frame failed: " << ret << "\n";
             ++put_failures;
