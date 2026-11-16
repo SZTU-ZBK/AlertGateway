@@ -10,26 +10,6 @@
 #include <deque>
 #include <chrono>
 #include "mpp_meta.h"
-#include "im2d.h"
-#include "rga.h"
-
-static bool rga_yuyv_to_nv12(const uint8_t* src, uint8_t* dst, int w, int h) {
-    rga_buffer_t src_buf = wrapbuffer_virtualaddr(
-        const_cast<uint8_t*>(src), w, h, RK_FORMAT_YUYV_422);
-    rga_buffer_t dst_buf = wrapbuffer_virtualaddr(dst, w, h, RK_FORMAT_YCbCr_420_SP);
-    rga_buffer_t pat_buf{};
-
-    im_rect srect{0, 0, w, h};
-    im_rect drect{0, 0, w, h};
-    im_rect prect{0, 0, 0, 0};
-
-    IM_STATUS ret = improcess(src_buf, dst_buf, pat_buf, srect, drect, prect, 0);
-    if (ret <= 0) {
-        return false;
-    }
-    return true;
-}
-
 static std::string get_display_label(const std::string& label) {
     if (label == "cell phone") return "手机";
     if (label == "cup") return "杯子";
@@ -60,7 +40,7 @@ void EncodeThread::start() {
 }
 
 // 置 running_=false 让 run() 循环下一次检查时自行退出，join 等待线程真正结束，
-// 再释放MPP资源——顺序很重要：线程没退出前不能销毁 ctx_/buf_group_。
+// 再释放MPP资源——顺序很重要：线程没退出前不能销毁 ctx_。
 void EncodeThread::stop() {
     running_ = false;
     if (thread_.joinable()) thread_.join();
@@ -106,7 +86,7 @@ bool EncodeThread::init_mpp() {
     cfg_ok = set_s32("prep:height",       cfg_.height) && cfg_ok;
     cfg_ok = set_s32("prep:hor_stride",   cfg_.width) && cfg_ok;
     cfg_ok = set_s32("prep:ver_stride",   cfg_.height) && cfg_ok;
-    cfg_ok = set_s32("prep:format",       MPP_FMT_YUV420SP) && cfg_ok;  // NV12，跟 yuyv_to_nv12 输出的格式对应
+    cfg_ok = set_s32("prep:format",       MPP_FMT_YUV420SP) && cfg_ok;  // 上游统一提供 NV12
 
     cfg_ok = set_s32("codec:type",        MPP_VIDEO_CodingAVC) && cfg_ok;
     cfg_ok = set_s32("h264:profile",      77) && cfg_ok;  // Main profile — wide player support
@@ -138,47 +118,12 @@ bool EncodeThread::init_mpp() {
         return false;
     }
 
-    // DRM buffer group：硬件能直接DMA访问的物理内存池，run()里每帧从这里取一块，
-    // memcpy进NV12数据后交给编码器（这次memcpy是否能省掉是潜在优化方向，待确认）
-    ret = mpp_buffer_group_get_internal(&buf_group_, MPP_BUFFER_TYPE_DRM);
-    if (ret != MPP_OK || !buf_group_) {
-        std::cerr << "mpp_buffer_group_get_internal(DRM) failed: "
-                  << ret << "\n";
-        deinit_mpp();
-        return false;
-    }
     return true;
 }
 
-// 按创建的反顺序释放：先还DRM buffer group，再销毁ctx_（mpi_随ctx_一起失效，置空即可）。
+// 销毁编码上下文，mpi_ 随 ctx_ 一起失效。
 void EncodeThread::deinit_mpp() {
-    if (buf_group_) { mpp_buffer_group_put(buf_group_); buf_group_ = nullptr; }
     if (ctx_)       { mpp_destroy(ctx_); ctx_ = nullptr; mpi_ = nullptr; }
-}
-
-// YUYV422 → NV12(YUV420SP) 直转，不经过RGB中间格式（纯CPU指针运算，没用RGA硬件，
-// 这是个潜在优化点）。YUYV每2个像素打包成 [Y0 U Y1 V]，NV12是Y平面+UV平面分离存储。
-// Y平面：逐像素直接取，每隔一个字节就是一个Y值。
-// UV平面：YUV420SP是4:2:0，水平已经在YUYV里2像素共享一组UV，这里再只取偶数行
-//        （(row&1)==0）实现垂直方向的2倍下采样，凑成4:2:0的UV平面布局。
-void EncodeThread::yuyv_to_nv12(const uint8_t* yuyv, uint8_t* nv12, int w, int h) {
-    uint8_t* y_plane  = nv12;
-    uint8_t* uv_plane = nv12 + w * h;
-
-    for (int row = 0; row < h; row++) {
-        const uint8_t* src  = yuyv  + row * w * 2;
-        uint8_t*       dy   = y_plane + row * w;
-        for (int i = 0; i < w; i++)
-            dy[i] = src[i * 2];  // every other byte is Y
-
-        if ((row & 1) == 0) {
-            uint8_t* duv = uv_plane + (row >> 1) * w;
-            for (int i = 0; i < w; i += 2) {
-                duv[i]     = src[i * 2 + 1];  // U
-                duv[i + 1] = src[i * 2 + 3];  // V
-            }
-        }
-    }
 }
 
 // 在NV12上手写画线/画框，没有用OpenCV等图形库——直接操作Y/UV两个平面的字节。
@@ -487,21 +432,15 @@ void EncodeThread::draw_detection_label_nv12(uint8_t* nv12, int w, int h,
 //   1) 从 in_queue_ 阻塞取一帧（200ms超时，超时则continue重新检查running_）。
 //      跟 InferThread 不同，这里不排空积压帧——enc_queue 容量只有1，本身就形成背压，
 //      没有"攒帧"的空间，按顺序逐帧编码才能保证视频流畅不丢帧。
-//   2) YUYV422→NV12 直转（RGA硬件优先，失败回退CPU）。
-//   3) 叠框：从 shared_dets_ 读最新一次推理结果（可能是上一帧甚至更早的，不强求对齐），
-//      直接在NV12像素上画绿框。
-//   4) 喂给MPP硬编码器：从DRM buffer group取一块物理内存，RGA直接写入（省掉memcpy），
-//      包装成MppFrame调 encode_put_frame()；PTS沿用源视频媒体时间戳
-//      （假设严格匀速出帧，没有用实际墙钟时间戳）。
+//   2) 校验上游的紧凑 NV12 DMA buffer，取得 CPU 映射用于绘制。
+//   3) 选择与当前 PTS 对齐的检测结果，直接在 NV12 像素上画框和标签。
+//   4) 将同一 buffer 关联到 MppFrame，提交 MPP 编码；保留源媒体时间戳。
 //   5) 取编码结果：encode_put_frame/encode_get_packet 是异步关系，硬件内部有流水线
 //      缓冲，一次put不一定对应一次get，要用while循环把当前能取的包全部取干净，
 //      否则会有包积压、时间戳错位的问题。每个包附带is_keyframe标记（从MppMeta读
 //      KEY_OUTPUT_INTRA），方便下游StreamThread/RTMP判断关键帧。
 void EncodeThread::run() {
     const int w = cfg_.width, h = cfg_.height;
-    const size_t frame_size = static_cast<size_t>(w * h * 3 / 2);  // NV12: w*h(Y) + w*h/2(UV)
-    std::vector<uint8_t> nv12_buf(frame_size);
-    int rga_fail_count = 0;
 
     // 绿色在BT.601 YCbCr下对应：Y=145, Cb=54, Cr=34
     constexpr uint8_t BOX_Y = 145, BOX_U = 54, BOX_V = 34;
@@ -526,51 +465,22 @@ void EncodeThread::run() {
         const auto frame_t = std::chrono::steady_clock::now();
         ++input_frames;
 
-        // 硬解码路径已经提供可导入的 MPP DRM buffer；普通采集/兼容路径才在这里申请编码 buffer。
-        // frame_buf 是 MPP 缓冲区的管理句柄；`mpp_buffer_get_ptr(frame_buf)` 返回这块缓冲区中像素数据的 CPU 虚拟地址。
-        MppBuffer frame_buf = nullptr;
-        bool owns_frame_buffer = false;
-        MPP_RET ret = MPP_OK;
-        if (frame.buffer_fd() >= 0 && frame.pixel_format == PixelFormat::NV12) {//如果前面用的是RGA硬件解码，就复用RGA的内存，不需要再次申请
-            frame_buf = frame.dma_buffer->buffer;
-        } else {//如果用的是软解码就需要申请内存
-            ret = mpp_buffer_get(buf_group_, &frame_buf, frame_size); //申请一份mpp_buffer内存
-            owns_frame_buffer = true;
-            if (ret != MPP_OK || !frame_buf) {
-                std::cerr << "[Encode] mpp_buffer_get failed: " << ret << "\n";
-                continue;
-            }
+        // 上游负责提供与编码配置匹配的紧凑 NV12 DMA buffer。
+        if (frame.buffer_fd() < 0 || frame.pixel_format != PixelFormat::NV12 ||
+            frame.width != w || frame.height != h ||
+            (frame.dma_stride != 0 && frame.dma_stride != w)) {
+            std::cerr << "[Encode] expected packed NV12 DMA buffer matching encoder dimensions\n";
+            continue;
         }
+        // 借用 Frame 持有的 MPP 引用，不在编码线程额外申请或归还输入 buffer。
+        MppBuffer frame_buf = frame.dma_buffer->buffer;
         uint8_t* drm_ptr = static_cast<uint8_t*>(mpp_buffer_get_ptr(frame_buf));
         if (!drm_ptr) {
-            std::cerr << "[Encode] mpp_buffer_get_ptr returned null\n";
-            if (owns_frame_buffer) mpp_buffer_put(frame_buf);
+            std::cerr << "[Encode] input DMA buffer has no CPU mapping for drawing\n";
             continue;
         }
 
-        if (frame.pixel_format == PixelFormat::NV12 && frame.buffer_fd() >= 0) {
-            // 工况 1：NV12 DMA buffer。前面已复用输入 buffer，drm_ptr 已指向其像素，无需拷贝。
-        } else if (frame.pixel_format == PixelFormat::NV12) {
-            // 工况 2：普通内存 NV12。拷贝到前面新申请的 MPP buffer，无需格式转换。
-            memcpy(drm_ptr, frame.raw_data.data(), frame_size);
-        } else if (frame.pixel_format == PixelFormat::YUYV && frame.buffer_fd() < 0) {
-            // 工况 3：普通内存 YUYV。RGA 转换到 NV12，失败时回退 CPU + memcpy。
-            bool rga_ok = rga_yuyv_to_nv12(frame.raw_data.data(), drm_ptr, w, h);
-            if (!rga_ok) {
-                yuyv_to_nv12(frame.raw_data.data(), nv12_buf.data(), w, h);
-                memcpy(drm_ptr, nv12_buf.data(), frame_size);
-                if (++rga_fail_count % 30 == 1) {
-                    std::cerr << "[Encode] RGA yuyv_to_nv12 failed, using CPU fallback ("
-                              << rga_fail_count << " times)\n" << std::flush;
-                }
-            }
-        } else {
-            std::cerr << "[Encode] unsupported input pixel format or buffer storage\n";
-            if (owns_frame_buffer) mpp_buffer_put(frame_buf);
-            continue;
-        }
-
-        // 当前帧先完整写入 DRM buffer，再叠加与其 PTS 对齐的检测结果。
+        // 在输入 DMA buffer 上叠加与 PTS 对齐的检测结果。
         const auto display = shared_dets_.get_for_pts(frame.pts_ms);//从历史快照中，选择时间不晚于当前视频帧的最近一份。
         audit_render_overlaps(display, frame);
         const int detection_box_thickness = (w >= 3840 && h >= 2160) ? 6 : 2;
@@ -595,10 +505,9 @@ void EncodeThread::run() {
         }
 
         MppFrame mpp_frame = nullptr;
-        ret = mpp_frame_init(&mpp_frame);
+        MPP_RET ret = mpp_frame_init(&mpp_frame);
         if (ret != MPP_OK || !mpp_frame) {
             std::cerr << "[Encode] mpp_frame_init failed: " << ret << "\n";
-            if (owns_frame_buffer) mpp_buffer_put(frame_buf);
             continue;
         }
         mpp_frame_set_width(mpp_frame,      w);
@@ -618,7 +527,6 @@ void EncodeThread::run() {
         ret = mpi_->encode_put_frame(ctx_, mpp_frame);
         // 销毁 MppFrame 这个"描述符"对象
         mpp_frame_deinit(&mpp_frame);
-        if (owns_frame_buffer) mpp_buffer_put(frame_buf);//如果这个frame_buf是自己申请的，就需要手动销毁，否则等frame对象离开作用域之后自己会销毁。
         if (ret != MPP_OK) {
             std::cerr << "[Encode] encode_put_frame failed: " << ret << "\n";
             ++put_failures;

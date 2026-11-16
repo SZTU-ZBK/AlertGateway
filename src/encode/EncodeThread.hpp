@@ -23,7 +23,7 @@ struct EncodeConfig {
     float render_overlap_min_intersection_area_px = 1.0f;
 };
 
-// 编码线程：取帧 → YUYV直转NV12 → 叠最新检测框 → MPP硬编码H.264 → 写EncodedPacket队列。
+// 编码线程：取 NV12 DMA 帧 → 叠最新检测框 → MPP硬编码H.264 → 写EncodedPacket队列。
 // 跟 InferThread 分开是为了让编码帧率不被NPU推理速度(~40ms/帧)拖累，
 // 检测框通过 shared_dets_ 这个"覆盖式共享区"读最新结果，不走队列、不等待推理完成。
 class EncodeThread {
@@ -38,12 +38,10 @@ public:
     void stop();   // 停线程并释放MPP资源
 
 private:
-    void run();          // 编码主循环（取帧→转格式→画框→硬编码→取包），详见 .cpp
-    bool init_mpp();     // 创建MPP编码上下文、配置参数、申请DRM buffer group，详见 .cpp
-    void deinit_mpp();   // 按创建的反顺序释放 buf_group_/ctx_
+    void run();          // 编码主循环（取 NV12 DMA 帧→画框→硬编码→取包），详见 .cpp
+    bool init_mpp();     // 创建MPP编码上下文、配置参数，详见 .cpp
+    void deinit_mpp();   // 释放编码上下文 ctx_
 
-    // YUYV422 → NV12(YUV420SP) CPU兜底路径，仅在 RGA 硬件失败时使用，详见 .cpp
-    static void yuyv_to_nv12(const uint8_t* yuyv, uint8_t* nv12, int w, int h);
     // 在NV12的Y/UV平面上直接画线/画框，没有用任何图形库，详见 .cpp
     static void draw_hline_nv12(uint8_t* nv12, int w, int h, int x0, int x1, int y,
                                  uint8_t yv, uint8_t uv, uint8_t vv);
@@ -81,7 +79,6 @@ private:
 
     MppCtx         ctx_       = nullptr;  // MPP 编码上下文
     MppApi*        mpi_       = nullptr;  // MPP 函数接口表，编解码操作都通过它调用
-    MppBufferGroup buf_group_ = nullptr;  // DRM类型buffer池，硬件编码器能直接DMA访问
     int64_t        frame_idx_ = 0;        // 累计编码帧数，用于按 cfg_.fps 推算每帧的PTS
     // 同一检测快照通常会被连续编码到多个视频帧；只审计/记录一次，避免重复刷日志。
     uint64_t       last_audited_detection_frame_id_ = UINT64_MAX;
