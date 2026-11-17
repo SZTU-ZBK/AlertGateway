@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <stdexcept>
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 namespace {
 
 constexpr int kCocoClasses = 80;
@@ -155,11 +159,11 @@ std::vector<Detection> RockchipYoloPostprocess::process(
 
         // Preallocate best scores and classes buffers to avoid heap allocations in 640x640 case
         std::vector<int8_t> best_scores_buf;
-        std::vector<int16_t> best_classes_buf;
+        std::vector<int8_t> best_classes_buf;
         int8_t* best_scores;
-        int16_t* best_classes;
+        int8_t* best_classes;
         int8_t local_scores[6400];
-        int16_t local_classes[6400];
+        int8_t local_classes[6400];
         if (grid_len <= 6400) {
             best_scores = local_scores;
             best_classes = local_classes;
@@ -172,6 +176,44 @@ std::vector<Detection> RockchipYoloPostprocess::process(
         std::fill_n(best_scores, grid_len, -128);
         std::fill_n(best_classes, grid_len, -1);
 
+        // One NEON lane per cell; reuse the score-sum mask across classes.
+#if defined(__aarch64__)
+        struct ActiveBlock {
+            int first;
+            uint8x16_t mask;
+        };
+        std::vector<ActiveBlock> blocks;
+        constexpr int lanes = 16;
+        const int tail = grid_len / lanes * lanes;
+        const auto min_sum = vdupq_n_s8(sum_threshold);
+        const auto min_score = vdupq_n_s8(score_threshold);
+        for (int cell = 0; cell < tail; cell += lanes) {
+            const auto mask = vcgeq_s8(vld1q_s8(sum_tensor + cell), min_sum);
+            if (vmaxvq_u8(mask)) blocks.push_back({cell, mask});
+        }
+        for (int class_id = 0; class_id < num_classes; ++class_id) {
+            const auto* scores = score_tensor + class_id * grid_len;
+            const auto index = vdupq_n_s8(static_cast<int8_t>(class_id));
+            for (const auto& block : blocks) {
+                const int cell = block.first;
+                const auto score = vld1q_s8(scores + cell);
+                const auto best = vld1q_s8(best_scores + cell);
+                const auto eligible = vandq_u8(block.mask, vcgtq_s8(score, min_score));
+                const auto better = vandq_u8(eligible, vcgtq_s8(score, best));
+                vst1q_s8(best_scores + cell, vbslq_s8(better, score, best));
+                const auto classes = vld1q_s8(best_classes + cell);
+                vst1q_s8(best_classes + cell, vbslq_s8(better, index, classes));
+            }
+            for (int cell = tail; cell < grid_len; ++cell) {
+                if (sum_tensor[cell] < sum_threshold) continue;
+                const int8_t score = scores[cell];
+                if (score > score_threshold && score > best_scores[cell]) {
+                    best_scores[cell] = score;
+                    best_classes[cell] = static_cast<int8_t>(class_id);
+                }
+            }
+        }
+#else
         // Restructured loops: loop over class_id on the outer level to make memory access 100% sequential
         for (int class_id = 0; class_id < num_classes; ++class_id) {
             const int8_t* class_scores = score_tensor + class_id * grid_len;
@@ -184,6 +226,8 @@ std::vector<Detection> RockchipYoloPostprocess::process(
                 }
             }
         }
+
+#endif
 
         // Loop over cells sequentially to construct candidates
         for (int row = 0; row < grid_h; ++row) {
