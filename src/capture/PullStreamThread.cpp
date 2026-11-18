@@ -263,9 +263,11 @@ void PullStreamThread::run() {
             : 33;
         int64_t source_pts_origin_ms = AV_NOPTS_VALUE;
         int64_t last_media_pts_ms = AV_NOPTS_VALUE;
+        bool pending_packet = false;
         while (running_) {
             const auto read_started = std::chrono::steady_clock::now();
-            ret = av_read_frame(format_ctx, packet);  //从解开的封装里读取packet，解封装的过程是将封装格式（如MP4、MKV、RTSP等）中的数据解析出来，得到原始的音视频数据包。这个函数会阻塞直到读取到一个完整的packet或者发生错误。
+            if (!pending_packet) ret = av_read_frame(format_ctx, packet);
+            else ret = 0;  //从解开的封装里读取packet，解封装的过程是将封装格式（如MP4、MKV、RTSP等）中的数据解析出来，得到原始的音视频数据包。这个函数会阻塞直到读取到一个完整的packet或者发生错误。
             read_us += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - read_started).count());
             ++read_calls;
@@ -283,7 +285,8 @@ void PullStreamThread::run() {
                 decode_send_us += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now() - decode_send_started).count());
                 ++decode_send_packets;
-                if (ret < 0) {
+                pending_packet = ret == AVERROR(EAGAIN);
+                if (ret < 0 && !pending_packet) {
                     std::cerr << "[PullStream] avcodec_send_packet error: " << ret << "\n" << std::flush;
                     av_packet_unref(packet);
                     break;
@@ -465,6 +468,7 @@ void PullStreamThread::run() {
                     }
                 }
             }
+            if (pending_packet) continue; // Drain available frames, then retry the same packet.
             av_packet_unref(packet);//释放packet的内存，避免内存泄漏
         }
 
