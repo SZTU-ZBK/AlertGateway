@@ -1,0 +1,156 @@
+{
+  "model": {
+    "path": "model/yolov8s_rockchip_dfl.rknn",
+    "output_layout": "rockchip_dfl",
+    "conf_threshold": 0.25,
+    "iou_threshold": 0.45,
+    "track_confirm_hits": 2,
+    "track_ttl_ms": 300,
+    "track_match_iou": 0.2,
+    "track_center_distance_ratio": 0.12,
+    "track_display_mode": 1,
+    "track_ema_alpha": 0.25,
+    "track_deadzone_center_px": 6.0,
+    "track_deadzone_size_ratio": 0.01,
+    "track_innovation_iou": 0.45,
+    "track_max_correction_px": 120.0,
+    "track_jump_confirm_hits": 2,
+    "track_align_to_video_pts": true,
+    "track_adaptive_filter": true,
+    "track_center_alpha_min": 0.18,
+    "track_center_alpha_max": 0.9,
+    "track_size_alpha_min": 0.12,
+    "track_size_alpha_max": 0.45,
+    "track_center_gated_size_filter": false,
+    "track_low_motion_size_alpha_max": 0.2,
+    "track_motion_full_response_ratio": 1.2,
+    "track_motion_smoothing_alpha": 0.35,
+    "track_display_hold_ms": 100,
+    "track_debug_logging": false,
+    "track_reversal_damping_enabled": false,
+    "track_reversal_center_alpha_max": 0.35,
+    "track_reversal_min_motion_ratio": 0.005,
+    "track_motion_stats_logging": false,
+    "track_global_motion_center_filter": false,
+    "track_global_motion_smoothing_alpha": 0.25,
+    "track_global_motion_min_tracks": 3,
+    "target_infer_fps": 7
+  },
+  "detection": {
+    "target_classes": [
+      "cell phone",
+      "cup",
+      "keyboard",
+      "mouse",
+      "laptop",
+      "book"
+    ],
+    "report_interval_sec": 1
+  },
+  "stream": {
+    "draw_detection_labels": true,
+    "detection_alignment_delay_frames": 3,
+    "sink": "fixed_rtmp",
+    "bitrate_kbps": 5000
+  },
+  "mqtt": {
+    "broker": "10.34.1.251",
+    "port": 18830,
+    "topic": "desk/usb_camera",
+    "client_id": "AlertGateway-USB-smoke"
+  },
+  "npu_scheduler": {
+    "enabled": true,
+    "mode": "global_serial",
+    "core_mask": "0_1_2",
+    "global_target_fps": 28,
+    "max_frame_age_ms": 250,
+    "stats_interval_sec": 10
+  },
+  "channels": [
+    {
+      "id": "1",
+      "source": {
+        "type": "pull_stream",
+        "url": "rtmp://10.34.1.251:1935/live/multi_camera",
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "reconnect_sec": 5,
+        "hardware_decode": true,
+        "output_width": 1920,
+        "output_height": 1080
+      },
+      "stream": {
+        "rtmp_url": "rtmp://10.34.1.251:1935/live/multi_result_1"
+      },
+      "mqtt": {
+        "topic": "desk/multi/1",
+        "client_id": "AG-multi-1"
+      }
+    },
+    {
+      "id": "2",
+      "source": {
+        "type": "pull_stream",
+        "url": "rtmp://10.34.1.251:1935/live/multi_camera",
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "reconnect_sec": 5,
+        "hardware_decode": true,
+        "output_width": 1920,
+        "output_height": 1080
+      },
+      "stream": {
+        "rtmp_url": "rtmp://10.34.1.251:1935/live/multi_result_2"
+      },
+      "mqtt": {
+        "topic": "desk/multi/2",
+        "client_id": "AG-multi-2"
+      }
+    },
+    {
+      "id": "3",
+      "source": {
+        "type": "pull_stream",
+        "url": "rtmp://10.34.1.251:1935/live/multi_camera",
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "reconnect_sec": 5,
+        "hardware_decode": true,
+        "output_width": 1920,
+        "output_height": 1080
+      },
+      "stream": {
+        "rtmp_url": "rtmp://10.34.1.251:1935/live/multi_result_3"
+      },
+      "mqtt": {
+        "topic": "desk/multi/3",
+        "client_id": "AG-multi-3"
+      }
+    },
+    {
+      "id": "4",
+      "source": {
+        "type": "pull_stream",
+        "url": "rtmp://10.34.1.251:1935/live/multi_camera",
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "reconnect_sec": 5,
+        "hardware_decode": true,
+        "output_width": 1920,
+        "output_height": 1080
+      },
+      "stream": {
+        "rtmp_url": "rtmp://10.34.1.251:1935/live/multi_result_4"
+      },
+      "mqtt": {
+        "topic": "desk/multi/4",
+        "client_id": "AG-multi-4"
+      }
+    }
+  ]
+}

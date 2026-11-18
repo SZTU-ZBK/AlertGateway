@@ -26,7 +26,7 @@ if [[ -f "$BUILD_DIR/deploy/AlertGateway" && ! "$APP" -nt "$BUILD_DIR/deploy/Ale
 elif [[ -f "$BUILD_DIR/lib/libpaho-mqtt3a.so.1" && -f "$BUILD_DIR/lib/libpaho-mqttpp3.so.1" ]]; then
     PAHO_DIR="$BUILD_DIR/lib"
 fi
-CONFIG="$PROJECT_DIR/config/config_srs_gui.json"
+CONFIG="${CONFIG_FILE:-$PROJECT_DIR/config/config_srs_gui.json}"
 MODEL="$PROJECT_DIR/model/yolov8s_rockchip_dfl.rknn"
 LAUNCHER="$PROJECT_DIR/start-board.sh"
 LIBRARIES=(libpaho-mqtt3a.so.1 libpaho-mqttpp3.so.1)
