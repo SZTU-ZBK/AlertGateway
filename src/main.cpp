@@ -123,14 +123,7 @@ void validate_output_topology(const std::vector<NormalizedChannel>& channels, bo
         const std::string sink = stream.value("sink", std::string("fixed_rtmp"));
         if (sink == "fixed_rtmp") {
             const std::string target = stream.value("rtmp_url", std::string{});
-            const std::string expected = std::string(kResultRtmpPrefix) + channel.id;
-            if (multi_channel_mode && target != expected) {
-                throw std::runtime_error(
-                    "Config error: channel " + channel.id +
-                    " fixed_rtmp must use " + expected);
-            }
-            if (!multi_channel_mode &&
-                (target.rfind("rtmp://", 0) != 0 || target.size() <= 7)) {
+            if (target.rfind("rtmp://", 0) != 0 || target.size() <= 7) {
                 throw std::runtime_error("Config error: fixed_rtmp requires stream.rtmp_url");
             }
             if (!result_urls.insert(target).second) {

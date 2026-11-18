@@ -220,10 +220,8 @@ void ChannelPipeline::build() {
     std::string output_target;
     if (sink == StreamSinkType::FixedRtmp) {
         output_target = stream.value("rtmp_url", std::string{});
-        const std::string expected = std::string(kMultiResultRtmpPrefix) + channel_id_;
-        if (channel_id_ != "single" && output_target != expected) {
-            throw std::runtime_error("Config error: fixed_rtmp must use " + expected);
-        }
+        if (output_target.rfind("rtmp://", 0) != 0 || output_target.size() <= 7)
+            throw std::runtime_error("Config error: invalid RTMP output URL");
     } else if (sink == StreamSinkType::LocalFlv) {
         output_target = stream.value("path", stream.value("rtmp_url", std::string{}));
         if (output_target.empty()) {
