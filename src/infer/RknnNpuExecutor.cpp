@@ -50,10 +50,9 @@ bool rga_to_rgb(const Frame& frame, bool letterbox, uint8_t* target, int target_
         std::fill(target, target + static_cast<size_t>(target_width) * target_height * 3, 114);
         destination_rect = {geometry.left, geometry.top, geometry.width, geometry.height};
     }
-    const int scheduler = frame.buffer_fd() >= 0 ? IM_SCHEDULER_RGA3_DEFAULT
-                                                  : IM_SCHEDULER_DEFAULT;
+    if (imconfig(IM_CONFIG_SCHEDULER_CORE, IM_SCHEDULER_RGA3_CORE0 | IM_SCHEDULER_RGA3_CORE1) != IM_STATUS_SUCCESS) return false;
     const IM_STATUS status = improcess(source, destination, pattern, source_rect, destination_rect,
-                                       im_rect{0, 0, 0, 0}, scheduler);
+                                       im_rect{0, 0, 0, 0}, IM_SYNC);
     if (status <= 0) {
         std::cerr << "[NpuExecutor] RGA preprocess failed: " << imStrError(status)
                   << " (" << status << ")\n" << std::flush;

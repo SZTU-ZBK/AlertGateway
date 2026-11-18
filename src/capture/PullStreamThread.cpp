@@ -33,10 +33,11 @@ static bool rga_resize_fd(int src_fd, int src_stride, int src_vstride, int dst_f
     rga_buffer_t dst_buf = wrapbuffer_fd(dst_fd, dw, dh, RK_FORMAT_YCbCr_420_SP,
                                          dst_stride, dh);
     rga_buffer_t pat_buf{};
+    if (imconfig(IM_CONFIG_SCHEDULER_CORE, IM_SCHEDULER_RGA3_CORE0 | IM_SCHEDULER_RGA3_CORE1) != IM_STATUS_SUCCESS) return false;
     const IM_STATUS ret = improcess(src_buf, dst_buf, pat_buf,
                                     im_rect{0, 0, sw, sh},
                                     im_rect{0, 0, dw, dh},
-                                    im_rect{0, 0, 0, 0}, 0);
+                                    im_rect{0, 0, 0, 0}, IM_SYNC);
     if (ret <= 0) {
         std::cerr << "[PullStream] RGA DMA-BUF resize failed: " << imStrError(ret)
                   << " (" << ret << ")\n" << std::flush;

@@ -158,6 +158,7 @@ std::shared_ptr<MppBufferHolder> EncodeThread::copy_for_drawing(const Frame& fra
     auto dst = wrapbuffer_fd(dst_fd, frame.width, frame.height,
                              RK_FORMAT_YCbCr_420_SP, frame.width, frame.height);
     // 同步复制完成后，CPU 才能绘制副本；共享源图像始终只读。
+    if (imconfig(IM_CONFIG_SCHEDULER_CORE, IM_SCHEDULER_RGA3_CORE0 | IM_SCHEDULER_RGA3_CORE1) != IM_STATUS_SUCCESS) return nullptr;
     const IM_STATUS result = imcopy(src, dst, 1);
     if (result != IM_STATUS_SUCCESS) {
         std::cerr << "[Encode] RGA copy failed: " << imStrError(result) << "\n";
