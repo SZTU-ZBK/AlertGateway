@@ -142,8 +142,8 @@ struct RknnNpuExecutor::Impl {
     bool started = false;
 };
 
-RknnNpuExecutor::RknnNpuExecutor(const ModelConfig& config)
-    : impl_(std::make_unique<Impl>(config)) {}
+RknnNpuExecutor::RknnNpuExecutor(const ModelConfig& config, int core_mask)
+    : impl_(std::make_unique<Impl>(config)), core_mask_(core_mask) {}
 
 RknnNpuExecutor::~RknnNpuExecutor() {
     stop();
@@ -175,8 +175,8 @@ bool RknnNpuExecutor::start(std::string* error) {
 
     int ret = rknn_init(&impl_->context, model.data(), model.size(), RKNN_FLAG_ENABLE_SRAM, nullptr);
     if (ret != RKNN_SUCC) return fail("rknn_init failed: " + std::to_string(ret));
-    ret = rknn_set_core_mask(impl_->context, RKNN_NPU_CORE_0_1_2);
-    if (ret != RKNN_SUCC) return fail("rknn_set_core_mask(RKNN_NPU_CORE_0_1_2) failed: " + std::to_string(ret));
+    ret = rknn_set_core_mask(impl_->context, static_cast<rknn_core_mask>(core_mask_));
+    if (ret != RKNN_SUCC) return fail("rknn_set_core_mask failed: " + std::to_string(ret));
 
     rknn_input_output_num io{};
     ret = rknn_query(impl_->context, RKNN_QUERY_IN_OUT_NUM, &io, sizeof(io));
@@ -220,7 +220,7 @@ bool RknnNpuExecutor::start(std::string* error) {
     ret = rknn_set_io_mem(impl_->context, impl_->input_memory, &input);
     if (ret != RKNN_SUCC) return fail("rknn_set_io_mem(input) failed: " + std::to_string(ret));
     impl_->started = true;
-    std::cout << "[NpuExecutor] RKNN context ready, all-core SRAM input_bytes=" << bytes << "\n" << std::flush;
+    std::cout << "[NpuExecutor] RKNN context ready, core_mask=" << core_mask_ << " SRAM input_bytes=" << bytes << "\n" << std::flush;
     return true;
 }
 

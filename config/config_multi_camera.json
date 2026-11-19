@@ -61,7 +61,7 @@
   },
   "npu_scheduler": {
     "enabled": true,
-    "mode": "global_serial",
+    "mode": "global_pool", "core_ids": [0, 1, 2],
     "core_mask": "0_1_2",
     "global_target_fps": 28,
     "max_frame_age_ms": 250,

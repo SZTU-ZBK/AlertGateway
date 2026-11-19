@@ -65,14 +65,17 @@ NpuInferenceScheduler::~NpuInferenceScheduler() {
 }
 
 void NpuInferenceScheduler::set_executor(Executor executor) {
-    if (!executor) {
-        throw std::invalid_argument("NpuInferenceScheduler executor must not be empty");
+    set_executors({std::move(executor)});
+}
+
+void NpuInferenceScheduler::set_executors(std::vector<Executor> executors) {
+    if (executors.empty() || executors.size() > 3 ||
+        std::any_of(executors.begin(), executors.end(), [](const Executor& executor) { return !executor; })) {
+        throw std::invalid_argument("NpuInferenceScheduler requires one to three valid executors");
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    if (worker_running_) {
-        throw std::logic_error("NpuInferenceScheduler executor cannot change while running");
-    }
-    executor_ = std::move(executor);
+    if (worker_running_) throw std::logic_error("Cannot change running NPU executors");
+    executors_ = std::move(executors);
 }
 
 void NpuInferenceScheduler::register_channel(NpuChannelConfig channel, Completion completion) {
@@ -138,16 +141,28 @@ bool NpuInferenceScheduler::submit(const std::string& channel_id, Frame frame) {
 }
 
 void NpuInferenceScheduler::start() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (worker_running_) return;
-    if (!executor_) {
-        throw std::logic_error("NpuInferenceScheduler requires an executor before start");
-    }
+    if (executors_.empty()) throw std::logic_error("NPU scheduler requires executors");
     accepting_ = true;
     stop_requested_ = false;
     worker_running_ = true;
     stats_window_started_at_ = Clock::now();
-    worker_ = std::thread(&NpuInferenceScheduler::run, this);
+    try {
+        for (size_t index = 0; index < executors_.size(); ++index) {
+            workers_.emplace_back(&NpuInferenceScheduler::run, this, index);
+        }
+    } catch (...) {
+        accepting_ = false;
+        stop_requested_ = true;
+        lock.unlock();
+        wakeup_.notify_all();
+        for (auto& worker : workers_) worker.join();
+        lock.lock();
+        workers_.clear();
+        worker_running_ = false;
+        throw;
+    }
 }
 
 void NpuInferenceScheduler::stop() {
@@ -159,7 +174,10 @@ void NpuInferenceScheduler::stop() {
         for (auto& [_, state] : channels_) state.latest_frame.reset();
     }
     wakeup_.notify_all();
-    if (worker_.joinable()) worker_.join();
+    for (auto& worker : workers_) worker.join();
+    std::lock_guard<std::mutex> lock(mutex_);
+    workers_.clear();
+    worker_running_ = false;
 }
 
 bool NpuInferenceScheduler::is_running() const {
@@ -193,7 +211,7 @@ NpuSchedulerStats NpuInferenceScheduler::stats() const {
     snapshot.queue_wait_avg_ms = average(queue_wait_samples_);
     snapshot.queue_wait_p95_ms = percentile95(queue_wait_samples_);
     snapshot.e2e_p95_ms = percentile95(e2e_samples_);
-    snapshot.busy_ratio = busy_ms_ / (elapsed_sec * 1000.0f);
+    snapshot.busy_ratio = busy_ms_ / (elapsed_sec * 1000.0f * std::max<size_t>(1, executors_.size()));
     return snapshot;
 }
 
@@ -259,7 +277,7 @@ void NpuInferenceScheduler::emit_stats_if_due_locked(Clock::time_point now) {
     snapshot.queue_wait_p95_ms = percentile95(queue_wait_samples_);
     snapshot.e2e_p95_ms = percentile95(e2e_samples_);
     const float elapsed_sec = std::chrono::duration<float>(now - stats_window_started_at_).count();
-    snapshot.busy_ratio = busy_ms_ / std::max(1.0f, elapsed_sec * 1000.0f);
+    snapshot.busy_ratio = busy_ms_ / std::max(1.0f, elapsed_sec * 1000.0f * std::max<size_t>(1, executors_.size()));
     snapshot.channels.reserve(channels_.size());
     for (const auto& id : channel_order_) {
         const auto it = channels_.find(id);
@@ -313,7 +331,7 @@ void NpuInferenceScheduler::emit_stats_if_due_locked(Clock::time_point now) {
     stats_window_started_at_ = now;
 }
 
-void NpuInferenceScheduler::run() {
+void NpuInferenceScheduler::run(size_t worker_index) {
     for (;;) {
         PendingJob job;
         Executor executor;
@@ -321,13 +339,12 @@ void NpuInferenceScheduler::run() {
             std::unique_lock<std::mutex> lock(mutex_);
             for (;;) {
                 if (stop_requested_) {
-                    worker_running_ = false;
                     return;
                 }
                 emit_stats_if_due_locked(Clock::now());
                 Clock::time_point wake_at;
                 if (select_job_locked(&job, &wake_at)) {
-                    executor = executor_;
+                    executor = executors_[worker_index];
                     break;
                 }
                 const Clock::time_point stats_due = stats_window_started_at_ +
@@ -342,7 +359,13 @@ void NpuInferenceScheduler::run() {
         }
 
         const Clock::time_point executor_started_at = Clock::now();
-        NpuInferenceResult result = executor(job.channel, job.frame);
+        NpuInferenceResult result;
+        try {
+            result = executor(job.channel, job.frame);
+        } catch (const std::exception& error) {
+            result.success = false;
+            std::cerr << "[NpuScheduler] executor failed: " << error.what() << "\n";
+        }
         const Clock::time_point executor_finished_at = Clock::now();
         result.channel_id = job.channel.channel_id;
         result.frame_id = job.frame.frame_id;
@@ -357,7 +380,6 @@ void NpuInferenceScheduler::run() {
             const auto it = channels_.find(job.channel.channel_id);
             if (it != channels_.end()) {
                 ChannelState& state = it->second;
-                state.running = false;
                 if (result.success) {
                     ++state.stats.completed;
                     ++stats_.completed;
@@ -385,13 +407,20 @@ void NpuInferenceScheduler::run() {
             wakeup_.notify_all();
         }
         if (completion) {
-            completion(result);
+            try {
+                completion(result);
+            } catch (const std::exception& error) {
+                std::cerr << "[NpuScheduler] callback failed: " << error.what() << "\n";
+            }
+        }
+        {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto it = channels_.find(job.channel.channel_id);
-            if (it != channels_.end() && it->second.callbacks_in_flight > 0) {
-                --it->second.callbacks_in_flight;
+            if (it != channels_.end()) {
+                it->second.running = false;
+                if (completion) --it->second.callbacks_in_flight;
             }
-            wakeup_.notify_all();
         }
+        wakeup_.notify_all();
     }
 }

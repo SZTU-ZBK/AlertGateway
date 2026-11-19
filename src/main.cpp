@@ -149,6 +149,7 @@ NpuSchedulerConfig parse_npu_scheduler_config(const json& root_config) {
     NpuSchedulerConfig config;
     config.enabled = scheduler.value("enabled", false);
     config.mode = scheduler.value("mode", std::string("global_serial"));
+    config.core_ids = scheduler.value("core_ids", std::vector<int>{0, 1, 2});
     config.core_mask = scheduler.value("core_mask", std::string("0_1_2"));
     config.global_target_fps = scheduler.value("global_target_fps", 0);
     config.max_frame_age_ms = scheduler.value("max_frame_age_ms", 250);
@@ -160,11 +161,14 @@ void validate_npu_scheduler_config(const NpuSchedulerConfig& scheduler,
                                    const std::vector<NormalizedChannel>& channels) {
     if (!scheduler.enabled) return;
 
-    if (scheduler.mode != "global_serial") {
-        throw std::runtime_error("Config error: npu_scheduler.mode must be global_serial");
+    if (scheduler.mode != "global_serial" && scheduler.mode != "global_pool") {
+        throw std::runtime_error("Config error: npu_scheduler.mode must be global_serial or global_pool");
+    }
+    if (scheduler.mode == "global_pool" && scheduler.core_ids != std::vector<int>{0, 1, 2}) {
+        throw std::runtime_error("global_pool requires core_ids [0, 1, 2]");
     }
     if (scheduler.core_mask != "0_1_2") {
-        throw std::runtime_error("Config error: npu_scheduler.core_mask must be 0_1_2 in P0");
+        throw std::runtime_error("Config error: npu_scheduler.core_mask must be 0_1_2");
     }
     if (scheduler.global_target_fps <= 0 || scheduler.max_frame_age_ms < 0 ||
         scheduler.stats_interval_sec <= 0) {
@@ -251,21 +255,28 @@ int main(int argc, char* argv[]) {
 
         std::cout << "[Config] channels=" << channels.size() << "\n";
         FFmpegNetworkGuard ffmpeg_network;
-        std::shared_ptr<RknnNpuExecutor> npu_executor;
+        std::vector<std::shared_ptr<RknnNpuExecutor>> npu_executors;
         NpuInferenceSchedulerPtr npu_scheduler;
         if (scheduler_config.enabled) {
-            npu_executor = std::make_shared<RknnNpuExecutor>(executor_model_config(channels.front()));
-            std::string executor_error;
-            if (!npu_executor->start(&executor_error)) {
-                throw std::runtime_error("NPU executor startup failed: " + executor_error);
+            std::vector<int> masks{7};
+            if (scheduler_config.mode == "global_pool") masks = {1, 2, 4};
+            std::vector<NpuInferenceScheduler::Executor> callbacks;
+            for (int mask : masks) {
+                auto executor = std::make_shared<RknnNpuExecutor>(executor_model_config(channels.front()), mask);
+                std::string error;
+                if (!executor->start(&error)) throw std::runtime_error("NPU executor startup failed: " + error);
+                npu_executors.push_back(executor);
+                callbacks.push_back([executor](const NpuChannelConfig& channel, const Frame& frame) {
+                    return executor->execute(channel, frame);
+                });
             }
             npu_scheduler = std::make_shared<NpuInferenceScheduler>(scheduler_config);
-            npu_scheduler->set_executor([npu_executor](const NpuChannelConfig& channel, const Frame& frame) {
-                return npu_executor->execute(channel, frame);
-            });
+            npu_scheduler->set_executors(std::move(callbacks));
             npu_scheduler->start();
-            std::cout << "[NpuScheduler] mode=global_serial core_mask=0_1_2 global_target_fps="
-                      << scheduler_config.global_target_fps << "\n";
+            std::cout << "[NpuScheduler] mode=" << scheduler_config.mode
+                      << " workers=" << masks.size()
+                      << " cores=" << (scheduler_config.mode == "global_pool" ? "[0],[1],[2]" : "[0,1,2]")
+                      << " global_target_fps=" << scheduler_config.global_target_fps << "\n";
         }
 
         std::vector<std::unique_ptr<ChannelPipeline>> pipelines;
@@ -287,7 +298,7 @@ int main(int argc, char* argv[]) {
                 (*it)->stop();
             }
             if (npu_scheduler) npu_scheduler->stop();
-            if (npu_executor) npu_executor->stop();
+            for (auto& executor : npu_executors) executor->stop();
             throw;
         }
 
@@ -305,7 +316,7 @@ int main(int argc, char* argv[]) {
             (*it)->stop();
         }
         if (npu_scheduler) npu_scheduler->stop();
-        if (npu_executor) npu_executor->stop();
+        for (auto& executor : npu_executors) executor->stop();
         std::cout << "Done.\n";
         return 0;
     } catch (const std::exception& e) {

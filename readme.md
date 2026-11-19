@@ -425,3 +425,18 @@ cd ~/AlertGateway
 ## License
 
 本项目代码以 MIT License 开源，见 `LICENSE`。`third_party/` 下的头文件（RKNN、MPP、RGA、Paho MQTT、nlohmann/json）保留各自上游的原始授权条款。
+
+
+### 多路 NPU 共享执行器
+
+四路配置默认使用 `npu_scheduler.mode: "global_pool"` 和 `core_ids: [0,1,2]`：
+三个工作线程各自拥有一个 RKNN 模型上下文，分别固定到 Core0、Core1、Core2；
+四路视频共享公平选帧、最新帧替换和原有检测预算，同一通道的结果回调完成后才调度下一帧。
+该模式仅支持 `[0,1,2]`，不支持任意核心组合。预处理、推理及后处理仍在各执行器内串行完成。
+
+`global_serial` 保留一个执行器，使用 `core_mask: "0_1_2"`；省略 mode 时仍默认串行。
+`core_mask` 保留兼容并要求为 `0_1_2`；pool 模式的实际绑定由 core_ids 决定。
+`enabled: false` 仍使用原独立推理路径。现有单路配置、四路检测帧率预算均未改变。
+恢复串行只需将 mode 改为 global_serial；无需改变视频码率或模型。
+
+多执行器忙碌比例按执行器数量归一化，表示工作线程占用，不等于硬件 NPU 利用率。

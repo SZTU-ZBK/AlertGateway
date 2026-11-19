@@ -8,11 +8,10 @@
 
 struct ModelConfig;
 
-// RKNN 的唯一资源拥有者。P2 将模型、输入 DMA 内存和后处理器都收敛在此对象；
-// P3 会让 NpuInferenceScheduler 的唯一 worker 独占一个该对象。
+// 每个执行器独占模型上下文、输入 DMA 内存和后处理器，由一个调度工作线程使用。
 class RknnNpuExecutor {
 public:
-    explicit RknnNpuExecutor(const ModelConfig& config);
+    explicit RknnNpuExecutor(const ModelConfig& config, int core_mask = 7);
     ~RknnNpuExecutor();
 
     RknnNpuExecutor(const RknnNpuExecutor&) = delete;
@@ -26,4 +25,5 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    int core_mask_;
 };

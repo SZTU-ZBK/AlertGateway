@@ -13,7 +13,7 @@
 
 #include "common/Frame.hpp"
 
-// 进程级 NPU 调度配置。P1 只实现调度算法；实际 RKNN executor 在 P2 实现。
+// 进程级 NPU 调度配置：串行执行器或三个单核执行器共享公平选帧。
 struct NpuSchedulerConfig {
     bool enabled = false;
     std::string mode = "global_serial";
@@ -21,6 +21,7 @@ struct NpuSchedulerConfig {
     int global_target_fps = 0;
     int max_frame_age_ms = 250;
     int stats_interval_sec = 10;
+    std::vector<int> core_ids{0, 1, 2};
 };
 
 struct NpuChannelConfig {
@@ -29,7 +30,7 @@ struct NpuChannelConfig {
     int weight = 1;
 };
 
-// P1 的 executor 返回值；P2 会补充检测结果及预处理/RKNN/后处理分段耗时。
+// 执行器返回的检测结果及现有阶段统计。
 struct NpuInferenceResult {
     std::string channel_id;
     uint64_t frame_id = 0;
@@ -80,7 +81,7 @@ struct NpuSchedulerStats {
 class NpuInferenceScheduler {
 public:
     using Completion = std::function<void(const NpuInferenceResult&)>;
-    // P2 由 RKNN executor 替换该函数对象；P1 smoke 使用固定耗时假 executor。
+    // 生产环境绑定独占的 RKNN 执行器，测试可注入模拟执行器。
     using Executor = std::function<NpuInferenceResult(const NpuChannelConfig&, const Frame&)>;
 
     explicit NpuInferenceScheduler(NpuSchedulerConfig config);
@@ -91,6 +92,7 @@ public:
 
     const NpuSchedulerConfig& config() const { return config_; }
     void set_executor(Executor executor);
+    void set_executors(std::vector<Executor> executors);
     void register_channel(NpuChannelConfig channel, Completion completion = {});
     void unregister_channel(const std::string& channel_id);
     bool submit(const std::string& channel_id, Frame frame);
@@ -103,7 +105,7 @@ private:
     struct ChannelState;
     struct PendingJob;
 
-    void run();
+    void run(size_t worker_index);
     bool select_job_locked(PendingJob* job,
                            std::chrono::steady_clock::time_point* wake_at);
     void drop_stale_locked(std::chrono::steady_clock::time_point now);
@@ -112,8 +114,8 @@ private:
     NpuSchedulerConfig config_;
     mutable std::mutex mutex_;
     std::condition_variable wakeup_;
-    std::thread worker_;
-    Executor executor_;
+    std::vector<std::thread> workers_;
+    std::vector<Executor> executors_;
     std::map<std::string, ChannelState> channels_;
     std::vector<std::string> channel_order_;
     size_t next_round_robin_index_ = 0;

@@ -1,5 +1,5 @@
 {
-  "npu_scheduler": {"enabled": true, "mode": "global_serial", "core_mask": "0_1_2", "global_target_fps": 29, "max_frame_age_ms": 250, "stats_interval_sec": 10},
+  "npu_scheduler": {"enabled": true, "mode": "global_pool", "core_ids": [0, 1, 2], "core_mask": "0_1_2", "global_target_fps": 29, "max_frame_age_ms": 250, "stats_interval_sec": 10},
   "model": {"path": "model/yolov8s_4k_photos_head_20e_20260718_finaltest_int8.rknn", "output_layout": "rockchip_dfl", "conf_threshold": 0.25, "iou_threshold": 0.45, "target_infer_fps": 7, "npu_weight": 1},
   "detection": {"target_classes": ["cell phone", "cup", "keyboard", "mouse", "laptop", "book"], "report_interval_sec": 1},
   "stream": {"bitrate_kbps": 8000, "draw_detection_labels": true, "detection_alignment_delay_frames": 3},
